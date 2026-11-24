@@ -1,19 +1,12 @@
 
 const { pool } = require("../config/database");
 
-/**
- * Require an authenticated, active administrator with a specific
- * permission that has not expired.
- *
- * Usage:
- * router.get("/", authenticate, requireAdminPermission("admin.settings.read"), handler);
- */
 const requireAdminPermission = (permissionKey) => {
   if (
     typeof permissionKey !== "string" ||
     !/^admin\.[a-z0-9_.]+$/.test(permissionKey)
   ) {
-    throw new Error("A valid admin permission key is required.");
+    throw new Error("Invalid administrator permission key.");
   }
 
   return async (req, res, next) => {
@@ -27,22 +20,72 @@ const requireAdminPermission = (permissionKey) => {
         });
       }
 
-      const result = await pool.query(
+      // ============================================
+      // 1. VERIFY ADMIN ACCOUNT
+      // ============================================
+
+      const adminResult = await pool.query(
         `
           SELECT
-            u.id,
-            u.role,
-            u.account_status,
-            ap.permission_key
-          FROM users u
-          INNER JOIN admin_user_permissions aup
-            ON aup.admin_user_id = u.id
+            id,
+            role,
+            account_status,
+            admin_type
+          FROM users
+          WHERE id = $1
+          LIMIT 1
+        `,
+        [adminUserId]
+      );
+
+      if (adminResult.rowCount === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "Administrator access is required."
+        });
+      }
+
+      const admin = adminResult.rows[0];
+
+      if (
+        admin.role !== "admin" ||
+        admin.account_status !== "active"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "Your administrator account is not authorized."
+        });
+      }
+
+      // ============================================
+      // 2. SUPER ADMIN HAS FULL ADMIN ACCESS
+      // ============================================
+
+      if (admin.admin_type === "super_admin") {
+        req.adminPermission = permissionKey;
+        req.adminType = "super_admin";
+
+        return next();
+      }
+
+      // ============================================
+      // 3. SUB-ADMIN MUST HAVE THE PERMISSION
+      // ============================================
+
+      if (admin.admin_type !== "sub_admin") {
+        return res.status(403).json({
+          success: false,
+          message: "Your administrator designation is invalid."
+        });
+      }
+
+      const permissionResult = await pool.query(
+        `
+          SELECT 1
+          FROM admin_user_permissions aup
           INNER JOIN admin_permissions ap
             ON ap.id = aup.permission_id
-          WHERE
-            u.id = $1
-            AND u.role = 'admin'
-            AND u.account_status = 'active'
+          WHERE aup.admin_user_id = $1
             AND ap.permission_key = $2
             AND ap.is_active = TRUE
             AND (
@@ -54,7 +97,7 @@ const requireAdminPermission = (permissionKey) => {
         [adminUserId, permissionKey]
       );
 
-      if (result.rowCount === 0) {
+      if (permissionResult.rowCount === 0) {
         return res.status(403).json({
           success: false,
           message: "You do not have permission to perform this action."
@@ -62,8 +105,10 @@ const requireAdminPermission = (permissionKey) => {
       }
 
       req.adminPermission = permissionKey;
+      req.adminType = "sub_admin";
 
       return next();
+
     } catch (error) {
       return next(error);
     }
