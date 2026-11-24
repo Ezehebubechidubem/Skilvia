@@ -1,14 +1,11 @@
 
 const express = require("express");
+
 const router = express.Router();
 
-const adminCategoryController = require("../controllers/adminCategoryController");
-
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const requireAdminPermission = require("../middleware/requireAdminPermission");
 const validate = require("../middleware/validate");
-
-const { apiLimiter } = require("../middleware/security");
 
 const {
   createCategorySchema,
@@ -17,57 +14,66 @@ const {
   deleteCategorySchema
 } = require("../validators/adminCategorySchemas");
 
+const {
+  createCategory,
+  getAllCategories,
+  getCategoryById,
+  updateCategory,
+  updateCategoryStatus
+} = require("../controllers/adminCategoryController");
+
 
 // =====================================================
-// ADMIN CATEGORY ROUTES
-// All routes require an authenticated administrator.
+// AUTHENTICATION
 // =====================================================
 
 router.use(authenticate);
-router.use(authorize("admin"));
-router.use(apiLimiter);
 
 
 // =====================================================
-// GET ALL CATEGORIES
+// VIEW ALL CATEGORIES
 // =====================================================
 
 router.get(
   "/",
-  adminCategoryController.getAllCategories
+  requireAdminPermission("admin.categories.read"),
+  getAllCategories
 );
 
 
 // =====================================================
-// CREATE CATEGORY OR SUBCATEGORY
+// CREATE CATEGORY
 // =====================================================
 
 router.post(
   "/",
+  requireAdminPermission("admin.categories.create"),
   validate(createCategorySchema),
-  adminCategoryController.createCategory
+  createCategory
 );
 
 
 // =====================================================
-// GET ONE CATEGORY
+// VIEW ONE CATEGORY
 // =====================================================
 
 router.get(
   "/:categoryId",
+  requireAdminPermission("admin.categories.read"),
   validate(deleteCategorySchema),
-  adminCategoryController.getCategoryById
+  getCategoryById
 );
 
 
 // =====================================================
-// UPDATE CATEGORY INFORMATION
+// UPDATE CATEGORY DETAILS
 // =====================================================
 
 router.patch(
   "/:categoryId",
+  requireAdminPermission("admin.categories.update"),
   validate(updateCategorySchema),
-  adminCategoryController.updateCategory
+  updateCategory
 );
 
 
@@ -77,8 +83,9 @@ router.patch(
 
 router.patch(
   "/:categoryId/status",
+  requireAdminPermission("admin.categories.manage_status"),
   validate(updateCategoryStatusSchema),
-  adminCategoryController.updateCategoryStatus
+  updateCategoryStatus
 );
 
 
