@@ -8,7 +8,8 @@ const requireAdminPermission = require("../middleware/requireAdminPermission");
 const validate = require("../middleware/validate");
 
 const {
-  getAdminAuditLogSchema
+  getAdminAuditLogSchema,
+  getAdminAuditLogByIdSchema
 } = require("../validators/adminAuditSchemas");
 
 const {
@@ -25,7 +26,7 @@ router.use(authenticate);
 
 
 // =====================================================
-// VIEW ADMIN AUDIT LOGS
+// LIST ADMIN AUDIT LOGS
 // =====================================================
 
 // GET /api/admin/audit-logs
@@ -39,7 +40,7 @@ router.get(
 
 
 // =====================================================
-// VIEW A SINGLE AUDIT RECORD
+// GET ONE ADMIN AUDIT RECORD
 // =====================================================
 
 // GET /api/admin/audit-logs/:auditLogId
@@ -47,7 +48,7 @@ router.get(
 router.get(
   "/:auditLogId",
   requireAdminPermission("admin.audit.read"),
-  validate(getAdminAuditLogSchema),
+  validate(getAdminAuditLogByIdSchema),
   getAdminAuditLogById
 );
 
