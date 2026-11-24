@@ -1,41 +1,58 @@
 
 const { pool } = require("../config/database");
+const {
+  recordAdminAudit
+} = require("../services/adminAuditService");
 
 
 // =====================================================
-// ADMIN ACCESS CHECK
+// RECORD ADMIN ACTION
 // =====================================================
 
-const requireAdmin = (req, res) => {
-  if (!req.auth || req.auth.role !== "admin") {
-    res.status(403).json({
-      success: false,
-      message: "Administrator access is required."
-    });
-
-    return false;
-  }
-
-  return true;
+const auditAdminAction = async (
+  req,
+  client,
+  action,
+  entityId,
+  beforeData,
+  afterData
+) => {
+  return recordAdminAudit(
+    {
+      actorUserId: req.auth.userId,
+      action,
+      entityType: "service_category",
+      entityId: String(entityId),
+      beforeData,
+      afterData,
+      ipAddress: req.ip || null,
+      userAgent: req.get("user-agent") || null,
+      requestId: req.id || null
+    },
+    client
+  );
 };
 
 
 // =====================================================
 // VALIDATE PARENT CATEGORY
-// PREVENTS INVALID CATEGORY HIERARCHIES
 // =====================================================
 
 const validateParentCategory = async (
+  client,
   parentId,
   currentCategoryId = null
 ) => {
   if (!parentId) return true;
 
-  if (currentCategoryId && parentId === currentCategoryId) {
+  if (
+    currentCategoryId &&
+    parentId === currentCategoryId
+  ) {
     return false;
   }
 
-  const parentResult = await pool.query(
+  const parentResult = await client.query(
     `SELECT id
      FROM service_categories
      WHERE id = $1
@@ -49,7 +66,7 @@ const validateParentCategory = async (
   }
 
   if (currentCategoryId) {
-    const descendantsResult = await pool.query(
+    const descendantsResult = await client.query(
       `WITH RECURSIVE descendants AS (
         SELECT id
         FROM service_categories
@@ -83,22 +100,35 @@ const validateParentCategory = async (
 // =====================================================
 
 const createCategory = async (req, res, next) => {
-  try {
-    if (!requireAdmin(req, res)) return;
+  const client = await pool.connect();
 
+  try {
     const data = req.validated.body;
+
+    await client.query("BEGIN");
+
+    // Serialize category hierarchy changes.
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1)",
+      [78124001]
+    );
 
     if (
       data.parent_id &&
-      !(await validateParentCategory(data.parent_id))
+      !(await validateParentCategory(
+        client,
+        data.parent_id
+      ))
     ) {
+      await client.query("ROLLBACK");
+
       return res.status(400).json({
         success: false,
         message: "The selected parent category is invalid or inactive."
       });
     }
 
-    const result = await pool.query(
+    const result = await client.query(
       `INSERT INTO service_categories (
         name,
         slug,
@@ -119,13 +149,28 @@ const createCategory = async (req, res, next) => {
       ]
     );
 
+    const category = result.rows[0];
+
+    await auditAdminAction(
+      req,
+      client,
+      "category_created",
+      category.id,
+      null,
+      category
+    );
+
+    await client.query("COMMIT");
+
     return res.status(201).json({
       success: true,
       message: "Category created successfully.",
-      category: result.rows[0]
+      category
     });
 
   } catch (error) {
+    await client.query("ROLLBACK");
+
     if (error.code === "23505") {
       return res.status(409).json({
         success: false,
@@ -134,19 +179,19 @@ const createCategory = async (req, res, next) => {
     }
 
     return next(error);
+
+  } finally {
+    client.release();
   }
 };
 
 
 // =====================================================
-// GET ALL CATEGORIES FOR ADMIN
-// INCLUDES ACTIVE AND INACTIVE CATEGORIES
+// GET ALL CATEGORIES
 // =====================================================
 
 const getAllCategories = async (req, res, next) => {
   try {
-    if (!requireAdmin(req, res)) return;
-
     const result = await pool.query(
       `SELECT
         sc.*,
@@ -180,20 +225,21 @@ const getAllCategories = async (req, res, next) => {
 
 
 // =====================================================
-// GET ONE CATEGORY FOR ADMIN
+// GET ONE CATEGORY
 // =====================================================
 
 const getCategoryById = async (req, res, next) => {
   try {
-    if (!requireAdmin(req, res)) return;
-
     const { categoryId } = req.validated.params;
 
     const result = await pool.query(
       `SELECT
         sc.*,
         parent.name AS parent_name,
-        COUNT(DISTINCT ps.id)::INTEGER AS total_services
+        COUNT(DISTINCT ps.id)::INTEGER AS total_services,
+        COUNT(DISTINCT ps.id)
+          FILTER (WHERE ps.is_active = TRUE)::INTEGER
+          AS active_services
        FROM service_categories sc
        LEFT JOIN service_categories parent
          ON parent.id = sc.parent_id
@@ -228,37 +274,54 @@ const getCategoryById = async (req, res, next) => {
 // =====================================================
 
 const updateCategory = async (req, res, next) => {
-  try {
-    if (!requireAdmin(req, res)) return;
+  const client = await pool.connect();
 
+  try {
     const { categoryId } = req.validated.params;
     const data = req.validated.body;
 
-    const existingResult = await pool.query(
+    await client.query("BEGIN");
+
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1)",
+      [78124001]
+    );
+
+    const existingResult = await client.query(
       `SELECT *
        FROM service_categories
        WHERE id = $1
-       LIMIT 1`,
+       FOR UPDATE`,
       [categoryId]
     );
 
     if (existingResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+
       return res.status(404).json({
         success: false,
         message: "Category not found."
       });
     }
 
+    const existing = existingResult.rows[0];
+
     if (
-      Object.prototype.hasOwnProperty.call(data, "parent_id") &&
+      Object.prototype.hasOwnProperty.call(
+        data,
+        "parent_id"
+      ) &&
       data.parent_id !== null
     ) {
       const validParent = await validateParentCategory(
+        client,
         data.parent_id,
         categoryId
       );
 
       if (!validParent) {
+        await client.query("ROLLBACK");
+
         return res.status(400).json({
           success: false,
           message: "The selected parent category is invalid or would create a category hierarchy cycle."
@@ -281,6 +344,8 @@ const updateCategory = async (req, res, next) => {
     );
 
     if (fields.length === 0) {
+      await client.query("ROLLBACK");
+
       return res.status(400).json({
         success: false,
         message: "No valid category information was provided."
@@ -295,7 +360,7 @@ const updateCategory = async (req, res, next) => {
 
     values.push(categoryId);
 
-    const result = await pool.query(
+    const result = await client.query(
       `UPDATE service_categories
        SET ${assignments.join(", ")}
        WHERE id = $${values.length}
@@ -303,13 +368,28 @@ const updateCategory = async (req, res, next) => {
       values
     );
 
+    const updatedCategory = result.rows[0];
+
+    await auditAdminAction(
+      req,
+      client,
+      "category_updated",
+      categoryId,
+      existing,
+      updatedCategory
+    );
+
+    await client.query("COMMIT");
+
     return res.status(200).json({
       success: true,
       message: "Category updated successfully.",
-      category: result.rows[0]
+      category: updatedCategory
     });
 
   } catch (error) {
+    await client.query("ROLLBACK");
+
     if (error.code === "23505") {
       return res.status(409).json({
         success: false,
@@ -318,6 +398,9 @@ const updateCategory = async (req, res, next) => {
     }
 
     return next(error);
+
+  } finally {
+    client.release();
   }
 };
 
@@ -327,87 +410,101 @@ const updateCategory = async (req, res, next) => {
 // =====================================================
 
 const updateCategoryStatus = async (req, res, next) => {
-  try {
-    if (!requireAdmin(req, res)) return;
+  const client = await pool.connect();
 
+  try {
     const { categoryId } = req.validated.params;
     const { is_active } = req.validated.body;
 
-    const client = await pool.connect();
+    await client.query("BEGIN");
 
-    try {
-      await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1)",
+      [78124001]
+    );
 
-      const categoryResult = await client.query(
+    const categoryResult = await client.query(
+      `SELECT *
+       FROM service_categories
+       WHERE id = $1
+       FOR UPDATE`,
+      [categoryId]
+    );
+
+    if (categoryResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        success: false,
+        message: "Category not found."
+      });
+    }
+
+    const existing = categoryResult.rows[0];
+
+    if (!is_active) {
+      const childResult = await client.query(
         `SELECT id
          FROM service_categories
-         WHERE id = $1
-         FOR UPDATE`,
+         WHERE parent_id = $1
+           AND is_active = TRUE
+         LIMIT 1`,
         [categoryId]
       );
 
-      if (categoryResult.rowCount === 0) {
+      if (childResult.rowCount > 0) {
         await client.query("ROLLBACK");
 
-        return res.status(404).json({
+        return res.status(409).json({
           success: false,
-          message: "Category not found."
+          message: "Deactivate or move the active subcategories before deactivating this parent category."
         });
       }
-
-      if (!is_active) {
-        const childResult = await client.query(
-          `SELECT id
-           FROM service_categories
-           WHERE parent_id = $1
-             AND is_active = TRUE
-           LIMIT 1`,
-          [categoryId]
-        );
-
-        if (childResult.rowCount > 0) {
-          await client.query("ROLLBACK");
-
-          return res.status(409).json({
-            success: false,
-            message: "Deactivate or move the active subcategories before deactivating this parent category."
-          });
-        }
-      }
-
-      const result = await client.query(
-        `UPDATE service_categories
-         SET is_active = $1
-         WHERE id = $2
-         RETURNING *`,
-        [is_active, categoryId]
-      );
-
-      await client.query("COMMIT");
-
-      return res.status(200).json({
-        success: true,
-        message: is_active
-          ? "Category activated successfully."
-          : "Category deactivated successfully.",
-        category: result.rows[0]
-      });
-
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
     }
 
+    const result = await client.query(
+      `UPDATE service_categories
+       SET is_active = $1
+       WHERE id = $2
+       RETURNING *`,
+      [is_active, categoryId]
+    );
+
+    const updatedCategory = result.rows[0];
+
+    await auditAdminAction(
+      req,
+      client,
+      is_active
+        ? "category_activated"
+        : "category_deactivated",
+      categoryId,
+      existing,
+      updatedCategory
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(200).json({
+      success: true,
+      message: is_active
+        ? "Category activated successfully."
+        : "Category deactivated successfully.",
+      category: updatedCategory
+    });
+
   } catch (error) {
+    await client.query("ROLLBACK");
     return next(error);
+
+  } finally {
+    client.release();
   }
 };
 
 
 // =====================================================
-// EXPORT CONTROLLER FUNCTIONS
+// EXPORT
 // =====================================================
 
 module.exports = {
