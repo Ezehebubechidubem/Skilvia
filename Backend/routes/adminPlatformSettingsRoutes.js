@@ -3,10 +3,16 @@ const express = require("express");
 
 const router = express.Router();
 
+const authenticate = require("../middleware/authenticate");
+const requireAdminPermission = require("../middleware/requireAdminPermission");
+const validate = require("../middleware/validate");
 
-// =====================================================
-// CONTROLLERS
-// =====================================================
+const {
+  getPlatformSettingsSchema,
+  getPlatformSettingSchema,
+  createPlatformSettingVersionSchema,
+  getPlatformSettingHistorySchema
+} = require("../validators/platformSettingSchemas");
 
 const {
   getPlatformSettings,
@@ -17,93 +23,66 @@ const {
 
 
 // =====================================================
-// MIDDLEWARE
-// =====================================================
-
-const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
-const validate = require("../middleware/validate");
-
-const {
-  apiLimiter
-} = require("../middleware/security");
-
-
-// =====================================================
-// VALIDATION SCHEMAS
-// =====================================================
-
-const {
-  getPlatformSettingsSchema,
-  getPlatformSettingSchema,
-  createPlatformSettingVersionSchema,
-  getPlatformSettingHistorySchema
-} = require("../validators/platformSettingSchemas");
-
-
-// =====================================================
-// ADMINISTRATOR SECURITY
+// AUTHENTICATION
 // =====================================================
 
 router.use(authenticate);
-router.use(authorize("admin"));
-router.use(apiLimiter);
 
 
 // =====================================================
-// LIST PLATFORM SETTINGS
+// VIEW PLATFORM SETTINGS
 // =====================================================
 
 // GET /api/admin/platform-settings
 
 router.get(
   "/",
+  requireAdminPermission("admin.settings.read"),
   validate(getPlatformSettingsSchema),
   getPlatformSettings
 );
 
 
 // =====================================================
-// GET ONE PLATFORM SETTING
-// =====================================================
-
-// GET /api/admin/platform-settings/:settingKey
-
-router.get(
-  "/:settingKey",
-  validate(getPlatformSettingSchema),
-  getPlatformSetting
-);
-
-
-// =====================================================
-// GET SETTING VERSION HISTORY
+// VIEW SETTING HISTORY
 // =====================================================
 
 // GET /api/admin/platform-settings/:settingKey/history
 
 router.get(
   "/:settingKey/history",
+  requireAdminPermission("admin.settings.read"),
   validate(getPlatformSettingHistorySchema),
   getSettingHistory
 );
 
 
 // =====================================================
-// CREATE SETTING VERSION
+// VIEW INDIVIDUAL PLATFORM SETTING
+// =====================================================
+
+// GET /api/admin/platform-settings/:settingKey
+
+router.get(
+  "/:settingKey",
+  requireAdminPermission("admin.settings.read"),
+  validate(getPlatformSettingSchema),
+  getPlatformSetting
+);
+
+
+// =====================================================
+// CREATE A NEW SETTING VERSION
 // =====================================================
 
 // POST /api/admin/platform-settings/:settingKey/versions
 
 router.post(
   "/:settingKey/versions",
+  requireAdminPermission("admin.settings.write"),
   validate(createPlatformSettingVersionSchema),
   createSettingVersion
 );
 
-
-// =====================================================
-// EXPORT
-// =====================================================
 
 module.exports = router;
