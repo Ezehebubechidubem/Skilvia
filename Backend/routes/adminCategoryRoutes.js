@@ -5,6 +5,7 @@ const router = express.Router();
 
 const authenticate = require("../middleware/authenticate");
 const requireAdminPermission = require("../middleware/requireAdminPermission");
+const preventCategoryStatusUpdate = require("../middleware/preventCategoryStatusUpdate");
 const validate = require("../middleware/validate");
 
 const {
@@ -76,6 +77,7 @@ router.patch(
   "/:categoryId",
   requireAdminPermission("admin.categories.update"),
   validate(updateCategorySchema),
+  preventCategoryStatusUpdate,
   updateCategory
 );
 
