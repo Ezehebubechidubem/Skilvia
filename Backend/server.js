@@ -42,6 +42,7 @@ const categoryRoutes = require("./routes/categoryRoutes");
 
 const adminCategoryRoutes = require("./routes/adminCategoryRoutes");
 const adminAuditRoutes = require("./routes/adminAuditRoutes");
+const platformSettingsRoutes = require("./routes/platformSettingsRoutes");
 
 
 // =====================================================
@@ -196,6 +197,16 @@ app.use("/api/categories", categoryRoutes);
 
 
 // =====================================================
+// PUBLIC PLATFORM SETTINGS
+// =====================================================
+
+// GET /api/settings/public
+// Returns only settings marked as public.
+
+app.use("/api/settings", platformSettingsRoutes);
+
+
+// =====================================================
 // ADMIN CATEGORY MANAGEMENT
 // =====================================================
 
@@ -207,6 +218,19 @@ app.use("/api/admin/categories", adminCategoryRoutes);
 // =====================================================
 
 app.use("/api/admin/audit-logs", adminAuditRoutes);
+
+
+// =====================================================
+// ADMIN PLATFORM SETTINGS
+// =====================================================
+
+// Administrative endpoints require authentication
+// and administrator authorization inside their router.
+
+app.use(
+  "/api/admin/platform-settings",
+  platformSettingsRoutes
+);
 
 
 // =====================================================
