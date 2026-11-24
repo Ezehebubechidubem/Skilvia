@@ -1,7 +1,7 @@
 
 const { z } = require("zod");
 
-const requestSchema = (bodySchema, paramsSchema = z.unknown()) =>
+const requestSchema = (bodySchema, paramsSchema = z.object({}).strict()) =>
   z.object({
     body: bodySchema,
     params: paramsSchema,
@@ -72,7 +72,8 @@ const createProfessionalProfileSchema = requestSchema(
 const updateProfessionalProfileSchema = requestSchema(
   z.object({
     ...professionalProfileFields,
-    professional_title: professionalProfileFields.professional_title.optional()
+    professional_title:
+      professionalProfileFields.professional_title.optional()
   })
     .strict()
     .refine(
@@ -94,7 +95,7 @@ const profileIdParamsSchema = z.object({
 
 
 // =====================================================
-// PROFILE AVAILABILITY UPDATE
+// UPDATE PROFESSIONAL AVAILABILITY
 // =====================================================
 
 const updateAvailabilitySchema = requestSchema(
@@ -104,13 +105,12 @@ const updateAvailabilitySchema = requestSchema(
       "busy",
       "unavailable"
     ])
-  }).strict(),
-  profileIdParamsSchema
+  }).strict()
 );
 
 
 // =====================================================
-// PROFESSIONAL PROFILE ID VALIDATION
+// GET PUBLIC PROFESSIONAL PROFILE
 // =====================================================
 
 const getProfessionalProfileSchema = requestSchema(
