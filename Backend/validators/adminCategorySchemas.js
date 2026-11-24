@@ -1,3 +1,4 @@
+
 const { z } = require("zod");
 
 
@@ -12,7 +13,7 @@ const requestSchema = (
   z.object({
     body: bodySchema,
     params: paramsSchema,
-    query: z.unknown()
+    query: z.object({}).strict()
   });
 
 
@@ -30,7 +31,10 @@ const categoryIdParamsSchema = z.object({
 // =====================================================
 
 const categoryFields = {
-  name: z.string().trim().min(2).max(100),
+  name: z.string()
+    .trim()
+    .min(2)
+    .max(100),
 
   slug: z.string()
     .trim()
@@ -41,11 +45,22 @@ const categoryFields = {
       "Slug must contain lowercase letters, numbers and hyphens only."
     ),
 
-  description: z.string().trim().max(2000).nullable().optional(),
+  description: z.string()
+    .trim()
+    .max(2000)
+    .nullable()
+    .optional(),
 
-  icon: z.string().trim().max(100).nullable().optional(),
+  icon: z.string()
+    .trim()
+    .max(100)
+    .nullable()
+    .optional(),
 
-  parent_id: z.string().uuid().nullable().optional(),
+  parent_id: z.string()
+    .uuid()
+    .nullable()
+    .optional(),
 
   sort_order: z.coerce.number()
     .int()
@@ -82,13 +97,11 @@ const updateCategorySchema = requestSchema(
 
     parent_id: categoryFields.parent_id,
 
-    sort_order: categoryFields.sort_order,
-
-    is_active: z.boolean().optional()
+    sort_order: categoryFields.sort_order
   })
     .strict()
     .refine(
-      (data) => Object.keys(data).length > 0,
+      data => Object.keys(data).length > 0,
       {
         message: "Provide at least one category field to update."
       }
