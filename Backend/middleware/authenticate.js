@@ -7,9 +7,10 @@ const jwt = require("jsonwebtoken");
 
 const authenticate = (req, res, next) => {
   try {
-    // Ensure JWT secret is configured
-    if (!process.env.JWT_SECRET) {
-      console.error("JWT_SECRET is not configured.");
+    const secret = process.env.JWT_SECRET;
+
+    if (!secret || secret.length < 32) {
+      console.error("JWT_SECRET is missing or invalid.");
 
       return res.status(500).json({
         success: false,
@@ -17,7 +18,6 @@ const authenticate = (req, res, next) => {
       });
     }
 
-    // Get authorization header
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
@@ -27,7 +27,6 @@ const authenticate = (req, res, next) => {
       });
     }
 
-    // Require Bearer token format
     const parts = authHeader.trim().split(/\s+/);
 
     if (
@@ -43,23 +42,21 @@ const authenticate = (req, res, next) => {
 
     const token = parts[1];
 
-    // Verify JWT signature and expiration
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET,
-      {
-        algorithms: ["HS256"],
-        clockTolerance: 5
-      }
-    );
+    // Verify signature, expiry, issuer and audience.
+    const decoded = jwt.verify(token, secret, {
+      algorithms: ["HS256"],
+      issuer: "skillvia-api",
+      audience: "skillvia-app",
+      clockTolerance: 5
+    });
 
-    // Ensure the token contains the required identity
-    // and represents an access token.
+    // Only access tokens can authenticate API requests.
     if (
       typeof decoded !== "object" ||
       !decoded.sub ||
       typeof decoded.sub !== "string" ||
-      decoded.type !== "access"
+      decoded.type !== "access" ||
+      !decoded.jti
     ) {
       return res.status(401).json({
         success: false,
@@ -67,14 +64,13 @@ const authenticate = (req, res, next) => {
       });
     }
 
-    // Attach verified authentication information
+    // Attach verified user information to the request.
     req.auth = Object.freeze({
       userId: decoded.sub,
       role: decoded.role || null,
-      tokenId: decoded.jti || null
+      tokenId: decoded.jti
     });
 
-    // Continue to the protected route
     return next();
 
   } catch (error) {
