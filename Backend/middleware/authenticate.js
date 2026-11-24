@@ -1,16 +1,11 @@
+
+const net = require("net");
+
 const { verifyAccessToken } = require("../utils/tokens");
 const { pool } = require("../config/database");
 
-// =====================================
-// AUTHENTICATION MIDDLEWARE
-// =====================================
-
 const authenticate = async (req, res, next) => {
   try {
-    // =====================================
-    // 1. CHECK AUTHORIZATION HEADER
-    // =====================================
-
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
@@ -33,16 +28,10 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    const accessToken = parts[1];
-
-    // =====================================
-    // 2. VERIFY ACCESS TOKEN
-    // =====================================
-
     let decoded;
 
     try {
-      decoded = verifyAccessToken(accessToken);
+      decoded = verifyAccessToken(parts[1]);
     } catch (error) {
       if (
         error.name === "TokenExpiredError" ||
@@ -59,16 +48,11 @@ const authenticate = async (req, res, next) => {
       throw error;
     }
 
-    // =====================================
-    // 3. CHECK USER AND SESSION IN DATABASE
-    // =====================================
-
     const result = await pool.query(
       `SELECT
         u.id,
         u.role,
         u.account_status,
-
         EXISTS (
           SELECT 1
           FROM refresh_tokens rt
@@ -77,7 +61,6 @@ const authenticate = async (req, res, next) => {
             AND rt.revoked_at IS NULL
             AND rt.expires_at > NOW()
         ) AS session_active
-
       FROM users u
       WHERE u.id = $1
       LIMIT 1`,
@@ -86,10 +69,6 @@ const authenticate = async (req, res, next) => {
         decoded.family
       ]
     );
-
-    // =====================================
-    // 4. CONFIRM USER EXISTS
-    // =====================================
 
     if (result.rowCount === 0) {
       return res.status(401).json({
@@ -100,10 +79,6 @@ const authenticate = async (req, res, next) => {
 
     const user = result.rows[0];
 
-    // =====================================
-    // 5. CHECK ACCOUNT STATUS
-    // =====================================
-
     if (user.account_status !== "active") {
       return res.status(403).json({
         success: false,
@@ -111,10 +86,6 @@ const authenticate = async (req, res, next) => {
           "Your account is not active. Please contact SKILVIA support."
       });
     }
-
-    // =====================================
-    // 6. CHECK SESSION REVOCATION
-    // =====================================
 
     if (user.session_active !== true) {
       return res.status(401).json({
@@ -125,7 +96,36 @@ const authenticate = async (req, res, next) => {
     }
 
     // =====================================
-    // 7. ATTACH CURRENT USER INFORMATION
+    // UPDATE DEVICE ACTIVITY
+    // =====================================
+
+    let ipAddress = req.ip || null;
+
+    if (ipAddress && ipAddress.startsWith("::ffff:")) {
+      ipAddress = ipAddress.substring(7);
+    }
+
+    if (!ipAddress || !net.isIP(ipAddress)) {
+      ipAddress = null;
+    }
+
+    await pool.query(
+      `UPDATE refresh_tokens
+       SET last_seen_at = NOW(),
+           last_ip_address = COALESCE($3::inet, last_ip_address)
+       WHERE user_id = $1
+         AND token_family = $2
+         AND revoked_at IS NULL
+         AND expires_at > NOW()`,
+      [
+        decoded.sub,
+        decoded.family,
+        ipAddress
+      ]
+    );
+
+    // =====================================
+    // ATTACH AUTHENTICATED USER
     // =====================================
 
     req.auth = Object.freeze({
@@ -149,9 +149,5 @@ const authenticate = async (req, res, next) => {
     });
   }
 };
-
-// =====================================
-// EXPORT MIDDLEWARE
-// =====================================
 
 module.exports = authenticate;
