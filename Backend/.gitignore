@@ -1,0 +1,40 @@
+
+# Dependencies
+node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Application logs
+logs/
+*.log
+
+# Testing and coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/
+
+# Uploaded files (Cloudinary will store permanent media)
+uploads/*
+!uploads/.gitkeep
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
+
+# Build outputs
+dist/
+build/
