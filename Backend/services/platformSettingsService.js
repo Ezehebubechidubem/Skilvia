@@ -5,6 +5,10 @@ const {
   recordAdminAudit
 } = require("./adminAuditService");
 
+const {
+  validatePlatformSettingValue
+} = require("../config/platformSettingDefinitions");
+
 
 // =====================================================
 // GET CURRENT EFFECTIVE SETTING
@@ -20,6 +24,7 @@ const getEffectiveSetting = async (
       ps.category,
       ps.description,
       ps.is_public,
+      ps.is_editable,
       psv.setting_value,
       psv.version_number,
       psv.effective_from,
@@ -46,11 +51,7 @@ const getEffectiveSetting = async (
     [settingKey]
   );
 
-  if (result.rowCount === 0) {
-    return null;
-  }
-
-  return result.rows[0];
+  return result.rows[0] || null;
 };
 
 
@@ -99,6 +100,7 @@ const getPlatformSettings = async ({
       ps.category,
       ps.description,
       ps.is_public,
+      ps.is_editable,
       psv.setting_value,
       psv.version_number,
       psv.effective_from,
@@ -152,12 +154,21 @@ const createSettingVersion = async ({
   userAgent = null,
   requestId = null
 }) => {
+  // Validate before opening the transaction.
+  const validatedValue = validatePlatformSettingValue(
+    settingKey,
+    settingValue
+  );
+
   const client = await pool.connect();
+
+  let transactionStarted = false;
 
   try {
     await client.query("BEGIN");
+    transactionStarted = true;
 
-    // Lock the setting definition.
+    // Lock the setting definition to serialize changes.
     const settingResult = await client.query(
       `SELECT *
        FROM platform_settings
@@ -186,13 +197,22 @@ const createSettingVersion = async ({
       throw error;
     }
 
+    // The database clock is authoritative for scheduling.
+    const clockResult = await client.query(
+      "SELECT NOW() AS database_time"
+    );
+
+    const databaseNow = new Date(
+      clockResult.rows[0].database_time
+    );
+
     const startDate = effectiveFrom
       ? new Date(effectiveFrom)
-      : new Date();
+      : databaseNow;
 
     if (
       Number.isNaN(startDate.getTime()) ||
-      startDate.getTime() < Date.now()
+      startDate.getTime() < databaseNow.getTime()
     ) {
       const error = new Error(
         "The effective date cannot be in the past."
@@ -202,7 +222,7 @@ const createSettingVersion = async ({
       throw error;
     }
 
-    // Read the latest version, including scheduled versions.
+    // Lock and retrieve the latest version.
     const latestResult = await client.query(
       `SELECT *
        FROM platform_setting_versions
@@ -221,7 +241,19 @@ const createSettingVersion = async ({
         new Date(latestVersion.effective_from).getTime()
     ) {
       const error = new Error(
-        "The new setting version must begin after the latest scheduled version."
+        "The new version must start after the latest scheduled version."
+      );
+
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (
+      latestVersion &&
+      latestVersion.effective_until !== null
+    ) {
+      const error = new Error(
+        "The latest setting version already has an end date. Review its version history before adding another version."
       );
 
       error.statusCode = 409;
@@ -232,13 +264,16 @@ const createSettingVersion = async ({
       ? latestVersion.version_number + 1
       : 1;
 
-    // End the previous version when the new version begins.
-    if (latestVersion && !latestVersion.effective_until) {
+    // Close the previous version exactly when the new one begins.
+    if (latestVersion) {
       await client.query(
         `UPDATE platform_setting_versions
          SET effective_until = $1
          WHERE id = $2`,
-        [startDate.toISOString(), latestVersion.id]
+        [
+          startDate.toISOString(),
+          latestVersion.id
+        ]
       );
     }
 
@@ -254,7 +289,7 @@ const createSettingVersion = async ({
       RETURNING *`,
       [
         setting.id,
-        JSON.stringify(settingValue),
+        JSON.stringify(validatedValue),
         nextVersionNumber,
         startDate.toISOString(),
         adminUserId
@@ -263,12 +298,14 @@ const createSettingVersion = async ({
 
     const newVersion = insertResult.rows[0];
 
+    // Audit is part of the same transaction.
     await recordAdminAudit(
       {
         actorUserId: adminUserId,
         action: "platform_setting_version_created",
         entityType: "platform_setting",
         entityId: setting.id,
+
         beforeData: latestVersion
           ? {
               version_number:
@@ -281,6 +318,7 @@ const createSettingVersion = async ({
                 latestVersion.effective_until
             }
           : null,
+
         afterData: {
           setting_key: setting.setting_key,
           version_number: newVersion.version_number,
@@ -288,6 +326,7 @@ const createSettingVersion = async ({
           effective_from: newVersion.effective_from,
           effective_until: newVersion.effective_until
         },
+
         ipAddress,
         userAgent,
         requestId
@@ -296,6 +335,7 @@ const createSettingVersion = async ({
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return {
       settingKey: setting.setting_key,
@@ -303,7 +343,17 @@ const createSettingVersion = async ({
     };
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Platform setting rollback failed:",
+          rollbackError.message
+        );
+      }
+    }
+
     throw error;
 
   } finally {
@@ -324,7 +374,13 @@ const getSettingHistory = async ({
   const offset = (page - 1) * limit;
 
   const settingResult = await pool.query(
-    `SELECT id, setting_key, category, description
+    `SELECT
+      id,
+      setting_key,
+      category,
+      description,
+      is_public,
+      is_editable
      FROM platform_settings
      WHERE setting_key = $1
      LIMIT 1`,
@@ -360,8 +416,7 @@ const getSettingHistory = async ({
      LEFT JOIN users u
        ON u.id = psv.created_by
      WHERE psv.setting_id = $1
-     ORDER BY
-       psv.version_number DESC
+     ORDER BY psv.version_number DESC
      LIMIT $2
      OFFSET $3`,
     [setting.id, limit, offset]
