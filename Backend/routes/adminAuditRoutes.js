@@ -1,49 +1,54 @@
 
 const express = require("express");
+
 const router = express.Router();
 
-const adminAuditController = require("../controllers/adminAuditController");
-
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const requireAdminPermission = require("../middleware/requireAdminPermission");
 const validate = require("../middleware/validate");
 
-const { apiLimiter } = require("../middleware/security");
-
 const {
-  getAdminAuditLogsSchema,
   getAdminAuditLogSchema
 } = require("../validators/adminAuditSchemas");
 
+const {
+  getAdminAuditLogs,
+  getAdminAuditLogById
+} = require("../controllers/adminAuditController");
+
 
 // =====================================================
-// ADMIN AUDIT ROUTES
+// AUTHENTICATION
 // =====================================================
 
 router.use(authenticate);
-router.use(authorize("admin"));
-router.use(apiLimiter);
 
 
 // =====================================================
-// GET AUDIT HISTORY
+// VIEW ADMIN AUDIT LOGS
 // =====================================================
+
+// GET /api/admin/audit-logs
 
 router.get(
   "/",
-  validate(getAdminAuditLogsSchema),
-  adminAuditController.getAdminAuditLogs
+  requireAdminPermission("admin.audit.read"),
+  validate(getAdminAuditLogSchema),
+  getAdminAuditLogs
 );
 
 
 // =====================================================
-// GET ONE AUDIT RECORD
+// VIEW A SINGLE AUDIT RECORD
 // =====================================================
+
+// GET /api/admin/audit-logs/:auditLogId
 
 router.get(
   "/:auditLogId",
+  requireAdminPermission("admin.audit.read"),
   validate(getAdminAuditLogSchema),
-  adminAuditController.getAdminAuditLog
+  getAdminAuditLogById
 );
 
 
