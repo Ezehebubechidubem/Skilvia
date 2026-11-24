@@ -14,92 +14,99 @@ const requestSchema = (
 
 
 // =====================================================
+// COMMON VALIDATION
+// =====================================================
+
+const uuidSchema = z.string().uuid();
+
+const paginationSchema = z.object({
+  page: z.coerce.number()
+    .int()
+    .min(1)
+    .max(1000000)
+    .default(1),
+
+  limit: z.coerce.number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(30)
+}).strict();
+
+
+// =====================================================
 // LIST ADMIN AUDIT LOGS
 // =====================================================
 
-const getAdminAuditLogsSchema = requestSchema(
-  z.object({}).strict(),
-  z.object({}).strict(),
-  z.object({
-    actor_user_id: z.string().uuid().optional(),
+const auditLogQuerySchema = paginationSchema.extend({
+  actor_user_id: uuidSchema.optional(),
 
-    action: z.string()
-      .trim()
-      .min(2)
-      .max(100)
-      .optional(),
+  action: z.string()
+    .trim()
+    .min(1)
+    .max(150)
+    .optional(),
 
-    entity_type: z.string()
-      .trim()
-      .min(2)
-      .max(100)
-      .optional(),
+  entity_type: z.string()
+    .trim()
+    .min(1)
+    .max(100)
+    .optional(),
 
-    entity_id: z.string()
-      .trim()
-      .min(1)
-      .max(150)
-      .optional(),
+  entity_id: z.string()
+    .trim()
+    .min(1)
+    .max(150)
+    .optional(),
 
-    start_date: z.string()
-      .datetime({ offset: true })
-      .optional(),
+  start_date: z.string()
+    .datetime({ offset: true })
+    .optional(),
 
-    end_date: z.string()
-      .datetime({ offset: true })
-      .optional(),
-
-    page: z.coerce.number()
-      .int()
-      .min(1)
-      .max(1000000)
-      .default(1),
-
-    limit: z.coerce.number()
-      .int()
-      .min(1)
-      .max(100)
-      .default(20)
-  }).strict().refine(
-    (data) => {
-      if (!data.start_date || !data.end_date) {
-        return true;
-      }
-
-      return (
-        new Date(data.start_date).getTime() <=
-        new Date(data.end_date).getTime()
-      );
-    },
-    {
-      message: "Start date must not be later than end date.",
-      path: ["end_date"]
-    }
-  )
-);
-
-
-// =====================================================
-// GET ONE AUDIT RECORD
-// =====================================================
-
-const auditLogIdParamsSchema = z.object({
-  auditLogId: z.string().uuid(
-    "Invalid audit log ID."
-  )
-}).strict();
+  end_date: z.string()
+    .datetime({ offset: true })
+    .optional()
+}).strict().superRefine((data, context) => {
+  if (
+    data.start_date &&
+    data.end_date &&
+    new Date(data.start_date) > new Date(data.end_date)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["end_date"],
+      message: "End date cannot be earlier than start date."
+    });
+  }
+});
 
 const getAdminAuditLogSchema = requestSchema(
   z.object({}).strict(),
-  auditLogIdParamsSchema
+  z.object({}).strict(),
+  auditLogQuerySchema
 );
 
 
 // =====================================================
-// EXPORT
+// GET ONE AUDIT LOG
+// =====================================================
+
+const getAdminAuditLogByIdSchema = requestSchema(
+  z.object({}).strict(),
+
+  z.object({
+    auditLogId: uuidSchema
+  }).strict(),
+
+  z.object({}).strict()
+);
+
+
+// =====================================================
+// EXPORTS
 // =====================================================
 
 module.exports = {
-  getAdminAuditLogsSchema,
-  getAdminAuditLogSchema
+  getAdminAuditLogSchema,
+  getAdminAuditLogByIdSchema
 };
