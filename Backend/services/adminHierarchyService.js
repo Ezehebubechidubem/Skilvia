@@ -14,49 +14,10 @@ class AdminHierarchyError extends Error {
 
 const SALT_ROUNDS = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
 
-const validateSuperAdmin = async (client, actorUserId) => {
-  const result = await client.query(
-    `
-      SELECT id
-      FROM users
-      WHERE id = $1
-        AND role = 'admin'
-        AND admin_type = 'super_admin'
-        AND account_status = 'active'
-      FOR UPDATE
-    `,
-    [actorUserId]
-  );
 
-  if (result.rowCount === 0) {
-    throw new AdminHierarchyError(
-      "Only the active super administrator can manage administrators.",
-      403
-    );
-  }
-};
-
-const auditAction = async (
-  client,
-  actorUserId,
-  action,
-  entityId,
-  beforeData,
-  afterData,
-  metadata = {}
-) => {
-  await recordAdminAudit({
-    actorUserId,
-    action,
-    entityType: "administrator",
-    entityId,
-    beforeData,
-    afterData,
-    ipAddress: metadata.ipAddress,
-    userAgent: metadata.userAgent,
-    requestId: metadata.requestId
-  }, client);
-};
+// =====================================================
+// TRANSACTION HELPER
+// =====================================================
 
 const withTransaction = async (callback) => {
   const client = await pool.connect();
@@ -84,6 +45,63 @@ const withTransaction = async (callback) => {
 
 
 // =====================================================
+// VERIFY MAIN ADMINISTRATOR
+// =====================================================
+
+const validateSuperAdmin = async (client, actorUserId) => {
+  const result = await client.query(
+    `
+      SELECT id
+      FROM users
+      WHERE id = $1
+        AND role = 'admin'
+        AND admin_type = 'super_admin'
+        AND account_status = 'active'
+      FOR UPDATE
+    `,
+    [actorUserId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new AdminHierarchyError(
+      "Only the active main administrator can manage administrators.",
+      403
+    );
+  }
+};
+
+
+// =====================================================
+// AUDIT HELPER
+// =====================================================
+
+const auditAction = async (
+  client,
+  actorUserId,
+  action,
+  entityId,
+  beforeData,
+  afterData,
+  metadata = {}
+) => {
+  await recordAdminAudit(
+    {
+      actorUserId,
+      action,
+      entityType: "administrator",
+      entityId,
+      beforeData,
+      afterData,
+      ipAddress: metadata.ipAddress,
+      userAgent: metadata.userAgent,
+      requestId: metadata.requestId
+    },
+    client
+  );
+};
+
+
+// =====================================================
 // LIST ADMINISTRATORS
 // =====================================================
 
@@ -99,6 +117,7 @@ const listAdministrators = async ({
 
   if (search) {
     values.push(`%${search}%`);
+
     conditions.push(
       `(full_name ILIKE $${values.length}
         OR email ILIKE $${values.length}
@@ -128,8 +147,6 @@ const listAdministrators = async ({
     values
   );
 
-  const dataValues = [...values, limit, offset];
-
   const result = await pool.query(
     `
       SELECT
@@ -150,18 +167,18 @@ const listAdministrators = async ({
       LIMIT $${values.length + 1}
       OFFSET $${values.length + 2}
     `,
-    dataValues
+    [...values, limit, offset]
   );
+
+  const total = countResult.rows[0].total;
 
   return {
     administrators: result.rows,
     pagination: {
       page,
       limit,
-      total: countResult.rows[0].total,
-      totalPages: Math.ceil(
-        countResult.rows[0].total / limit
-      )
+      total,
+      totalPages: Math.ceil(total / limit)
     }
   };
 };
@@ -305,6 +322,18 @@ const updateSubAdminStatus = async (
   actorUserId,
   metadata = {}
 ) => {
+  const allowedStatuses = [
+    "active",
+    "suspended",
+    "deactivated"
+  ];
+
+  if (!allowedStatuses.includes(accountStatus)) {
+    throw new AdminHierarchyError(
+      "Invalid administrator account status."
+    );
+  }
+
   return withTransaction(async (client) => {
     await validateSuperAdmin(client, actorUserId);
 
@@ -340,6 +369,13 @@ const updateSubAdminStatus = async (
       );
     }
 
+    if (existingAdmin.admin_type !== "sub_admin") {
+      throw new AdminHierarchyError(
+        "Invalid administrator designation.",
+        403
+      );
+    }
+
     if (existingAdmin.account_status === accountStatus) {
       throw new AdminHierarchyError(
         "The administrator already has this account status.",
@@ -368,6 +404,22 @@ const updateSubAdminStatus = async (
     );
 
     const updatedAdmin = result.rows[0];
+
+    // Revoke every active refresh-token session when
+    // a sub-admin is suspended or deactivated.
+    if (accountStatus !== "active") {
+      await client.query(
+        `
+          UPDATE refresh_tokens
+          SET
+            revoked_at = NOW(),
+            revoked_reason = 'admin_account_status_changed'
+          WHERE user_id = $1
+            AND revoked_at IS NULL
+        `,
+        [adminId]
+      );
+    }
 
     await auditAction(
       client,
