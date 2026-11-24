@@ -1,5 +1,6 @@
 
 const { pool } = require("../config/database");
+
 const {
   recordAdminAudit
 } = require("../services/adminAuditService");
@@ -35,6 +36,20 @@ const auditAdminAction = async (
 
 
 // =====================================================
+// TRANSACTION ROLLBACK HELPER
+// =====================================================
+
+const rollbackTransaction = async (client) => {
+  try {
+    await client.query("ROLLBACK");
+  } catch (error) {
+    error.message = `Transaction rollback failed: ${error.message}`;
+    throw error;
+  }
+};
+
+
+// =====================================================
 // VALIDATE PARENT CATEGORY
 // =====================================================
 
@@ -43,7 +58,9 @@ const validateParentCategory = async (
   parentId,
   currentCategoryId = null
 ) => {
-  if (!parentId) return true;
+  if (!parentId) {
+    return true;
+  }
 
   if (
     currentCategoryId &&
@@ -53,11 +70,13 @@ const validateParentCategory = async (
   }
 
   const parentResult = await client.query(
-    `SELECT id
-     FROM service_categories
-     WHERE id = $1
-       AND is_active = TRUE
-     LIMIT 1`,
+    `
+      SELECT id
+      FROM service_categories
+      WHERE id = $1
+        AND is_active = TRUE
+      LIMIT 1
+    `,
     [parentId]
   );
 
@@ -67,22 +86,24 @@ const validateParentCategory = async (
 
   if (currentCategoryId) {
     const descendantsResult = await client.query(
-      `WITH RECURSIVE descendants AS (
+      `
+        WITH RECURSIVE descendants AS (
+          SELECT id
+          FROM service_categories
+          WHERE parent_id = $1
+
+          UNION
+
+          SELECT sc.id
+          FROM service_categories sc
+          INNER JOIN descendants d
+            ON sc.parent_id = d.id
+        )
         SELECT id
-        FROM service_categories
-        WHERE parent_id = $1
-
-        UNION
-
-        SELECT sc.id
-        FROM service_categories sc
-        INNER JOIN descendants d
-          ON sc.parent_id = d.id
-      )
-      SELECT id
-      FROM descendants
-      WHERE id = $2
-      LIMIT 1`,
+        FROM descendants
+        WHERE id = $2
+        LIMIT 1
+      `,
       [currentCategoryId, parentId]
     );
 
@@ -101,11 +122,13 @@ const validateParentCategory = async (
 
 const createCategory = async (req, res, next) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const data = req.validated.body;
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     // Serialize category hierarchy changes.
     await client.query(
@@ -120,7 +143,8 @@ const createCategory = async (req, res, next) => {
         data.parent_id
       ))
     ) {
-      await client.query("ROLLBACK");
+      await rollbackTransaction(client);
+      transactionStarted = false;
 
       return res.status(400).json({
         success: false,
@@ -129,16 +153,18 @@ const createCategory = async (req, res, next) => {
     }
 
     const result = await client.query(
-      `INSERT INTO service_categories (
-        name,
-        slug,
-        description,
-        icon,
-        parent_id,
-        sort_order
-      )
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *`,
+      `
+        INSERT INTO service_categories (
+          name,
+          slug,
+          description,
+          icon,
+          parent_id,
+          sort_order
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `,
       [
         data.name,
         data.slug,
@@ -161,6 +187,7 @@ const createCategory = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(201).json({
       success: true,
@@ -169,7 +196,13 @@ const createCategory = async (req, res, next) => {
     });
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await rollbackTransaction(client);
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+      }
+    }
 
     if (error.code === "23505") {
       return res.status(409).json({
@@ -193,23 +226,25 @@ const createCategory = async (req, res, next) => {
 const getAllCategories = async (req, res, next) => {
   try {
     const result = await pool.query(
-      `SELECT
-        sc.*,
-        parent.name AS parent_name,
-        COUNT(DISTINCT ps.id)::INTEGER AS total_services,
-        COUNT(DISTINCT ps.id)
-          FILTER (WHERE ps.is_active = TRUE)::INTEGER
-          AS active_services
-       FROM service_categories sc
-       LEFT JOIN service_categories parent
-         ON parent.id = sc.parent_id
-       LEFT JOIN professional_services ps
-         ON ps.category_id = sc.id
-       GROUP BY sc.id, parent.name
-       ORDER BY
-         sc.parent_id NULLS FIRST,
-         sc.sort_order ASC,
-         sc.name ASC`
+      `
+        SELECT
+          sc.*,
+          parent.name AS parent_name,
+          COUNT(DISTINCT ps.id)::INTEGER AS total_services,
+          COUNT(DISTINCT ps.id)
+            FILTER (WHERE ps.is_active = TRUE)::INTEGER
+            AS active_services
+        FROM service_categories sc
+        LEFT JOIN service_categories parent
+          ON parent.id = sc.parent_id
+        LEFT JOIN professional_services ps
+          ON ps.category_id = sc.id
+        GROUP BY sc.id, parent.name
+        ORDER BY
+          sc.parent_id NULLS FIRST,
+          sc.sort_order ASC,
+          sc.name ASC
+      `
     );
 
     return res.status(200).json({
@@ -233,21 +268,23 @@ const getCategoryById = async (req, res, next) => {
     const { categoryId } = req.validated.params;
 
     const result = await pool.query(
-      `SELECT
-        sc.*,
-        parent.name AS parent_name,
-        COUNT(DISTINCT ps.id)::INTEGER AS total_services,
-        COUNT(DISTINCT ps.id)
-          FILTER (WHERE ps.is_active = TRUE)::INTEGER
-          AS active_services
-       FROM service_categories sc
-       LEFT JOIN service_categories parent
-         ON parent.id = sc.parent_id
-       LEFT JOIN professional_services ps
-         ON ps.category_id = sc.id
-       WHERE sc.id = $1
-       GROUP BY sc.id, parent.name
-       LIMIT 1`,
+      `
+        SELECT
+          sc.*,
+          parent.name AS parent_name,
+          COUNT(DISTINCT ps.id)::INTEGER AS total_services,
+          COUNT(DISTINCT ps.id)
+            FILTER (WHERE ps.is_active = TRUE)::INTEGER
+            AS active_services
+        FROM service_categories sc
+        LEFT JOIN service_categories parent
+          ON parent.id = sc.parent_id
+        LEFT JOIN professional_services ps
+          ON ps.category_id = sc.id
+        WHERE sc.id = $1
+        GROUP BY sc.id, parent.name
+        LIMIT 1
+      `,
       [categoryId]
     );
 
@@ -270,17 +307,19 @@ const getCategoryById = async (req, res, next) => {
 
 
 // =====================================================
-// UPDATE CATEGORY
+// UPDATE CATEGORY DETAILS
 // =====================================================
 
 const updateCategory = async (req, res, next) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const { categoryId } = req.validated.params;
     const data = req.validated.body;
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     await client.query(
       "SELECT pg_advisory_xact_lock($1)",
@@ -288,15 +327,18 @@ const updateCategory = async (req, res, next) => {
     );
 
     const existingResult = await client.query(
-      `SELECT *
-       FROM service_categories
-       WHERE id = $1
-       FOR UPDATE`,
+      `
+        SELECT *
+        FROM service_categories
+        WHERE id = $1
+        FOR UPDATE
+      `,
       [categoryId]
     );
 
     if (existingResult.rowCount === 0) {
-      await client.query("ROLLBACK");
+      await rollbackTransaction(client);
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
@@ -320,7 +362,8 @@ const updateCategory = async (req, res, next) => {
       );
 
       if (!validParent) {
-        await client.query("ROLLBACK");
+        await rollbackTransaction(client);
+        transactionStarted = false;
 
         return res.status(400).json({
           success: false,
@@ -329,22 +372,24 @@ const updateCategory = async (req, res, next) => {
       }
     }
 
+    // Only category details can be changed here.
+    // is_active is deliberately excluded.
     const allowedFields = [
       "name",
       "slug",
       "description",
       "icon",
       "parent_id",
-      "sort_order",
-      "is_active"
+      "sort_order"
     ];
 
     const fields = Object.keys(data).filter(
-      (field) => allowedFields.includes(field)
+      field => allowedFields.includes(field)
     );
 
     if (fields.length === 0) {
-      await client.query("ROLLBACK");
+      await rollbackTransaction(client);
+      transactionStarted = false;
 
       return res.status(400).json({
         success: false,
@@ -352,7 +397,7 @@ const updateCategory = async (req, res, next) => {
       });
     }
 
-    const values = fields.map((field) => data[field]);
+    const values = fields.map(field => data[field]);
 
     const assignments = fields.map(
       (field, index) => `${field} = $${index + 1}`
@@ -361,10 +406,12 @@ const updateCategory = async (req, res, next) => {
     values.push(categoryId);
 
     const result = await client.query(
-      `UPDATE service_categories
-       SET ${assignments.join(", ")}
-       WHERE id = $${values.length}
-       RETURNING *`,
+      `
+        UPDATE service_categories
+        SET ${assignments.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING *
+      `,
       values
     );
 
@@ -380,6 +427,7 @@ const updateCategory = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(200).json({
       success: true,
@@ -388,7 +436,13 @@ const updateCategory = async (req, res, next) => {
     });
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await rollbackTransaction(client);
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+      }
+    }
 
     if (error.code === "23505") {
       return res.status(409).json({
@@ -411,12 +465,14 @@ const updateCategory = async (req, res, next) => {
 
 const updateCategoryStatus = async (req, res, next) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const { categoryId } = req.validated.params;
     const { is_active } = req.validated.body;
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     await client.query(
       "SELECT pg_advisory_xact_lock($1)",
@@ -424,15 +480,18 @@ const updateCategoryStatus = async (req, res, next) => {
     );
 
     const categoryResult = await client.query(
-      `SELECT *
-       FROM service_categories
-       WHERE id = $1
-       FOR UPDATE`,
+      `
+        SELECT *
+        FROM service_categories
+        WHERE id = $1
+        FOR UPDATE
+      `,
       [categoryId]
     );
 
     if (categoryResult.rowCount === 0) {
-      await client.query("ROLLBACK");
+      await rollbackTransaction(client);
+      transactionStarted = false;
 
       return res.status(404).json({
         success: false,
@@ -442,18 +501,33 @@ const updateCategoryStatus = async (req, res, next) => {
 
     const existing = categoryResult.rows[0];
 
+    if (existing.is_active === is_active) {
+      await rollbackTransaction(client);
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: is_active
+          ? "This category is already active."
+          : "This category is already inactive."
+      });
+    }
+
     if (!is_active) {
       const childResult = await client.query(
-        `SELECT id
-         FROM service_categories
-         WHERE parent_id = $1
-           AND is_active = TRUE
-         LIMIT 1`,
+        `
+          SELECT id
+          FROM service_categories
+          WHERE parent_id = $1
+            AND is_active = TRUE
+          LIMIT 1
+        `,
         [categoryId]
       );
 
       if (childResult.rowCount > 0) {
-        await client.query("ROLLBACK");
+        await rollbackTransaction(client);
+        transactionStarted = false;
 
         return res.status(409).json({
           success: false,
@@ -463,10 +537,12 @@ const updateCategoryStatus = async (req, res, next) => {
     }
 
     const result = await client.query(
-      `UPDATE service_categories
-       SET is_active = $1
-       WHERE id = $2
-       RETURNING *`,
+      `
+        UPDATE service_categories
+        SET is_active = $1
+        WHERE id = $2
+        RETURNING *
+      `,
       [is_active, categoryId]
     );
 
@@ -484,6 +560,7 @@ const updateCategoryStatus = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(200).json({
       success: true,
@@ -494,7 +571,14 @@ const updateCategoryStatus = async (req, res, next) => {
     });
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await rollbackTransaction(client);
+      } catch (rollbackError) {
+        error.rollbackError = rollbackError;
+      }
+    }
+
     return next(error);
 
   } finally {
