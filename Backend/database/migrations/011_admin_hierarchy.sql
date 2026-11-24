@@ -20,15 +20,7 @@ WHERE role = 'admin'
 
 
 -- =====================================================
--- 3. SET DEFAULT FOR FUTURE ADMIN ACCOUNTS
--- =====================================================
-
-ALTER TABLE users
-ALTER COLUMN admin_type SET DEFAULT 'sub_admin';
-
-
--- =====================================================
--- 4. ENFORCE VALID ADMIN DESIGNATIONS
+-- 3. ENFORCE VALID ADMIN DESIGNATIONS
 -- =====================================================
 
 ALTER TABLE users
@@ -47,7 +39,7 @@ CHECK (
 
 
 -- =====================================================
--- 5. ALLOW ONLY ONE SUPER ADMIN
+-- 4. ALLOW ONLY ONE SUPER ADMIN
 -- =====================================================
 
 CREATE UNIQUE INDEX users_single_super_admin_idx
@@ -57,7 +49,7 @@ WHERE role = 'admin'
 
 
 -- =====================================================
--- 6. INDEX ADMINISTRATOR LOOKUPS
+-- 5. INDEX ADMINISTRATOR LOOKUPS
 -- =====================================================
 
 CREATE INDEX users_admin_type_status_idx
