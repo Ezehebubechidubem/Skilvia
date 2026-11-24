@@ -1,163 +1,302 @@
 
 require("dotenv").config();
 
+// =====================================
+// LOAD ENVIRONMENT CONFIGURATION FIRST
+// =====================================
+
+const env = require("./config/environment");
+
+// =====================================
+// IMPORT DEPENDENCIES
+// =====================================
+
 const express = require("express");
 const http = require("http");
-const cors = require("cors");
-const helmet = require("helmet");
 const morgan = require("morgan");
-const rateLimit = require("express-rate-limit");
 const { Server } = require("socket.io");
 
-// Initialize Express
-const app = express();
+const {
+  connectDatabase,
+  closeDatabase
+} = require("./config/database");
 
-// Create HTTP server
+const {
+  securityHeaders,
+  corsMiddleware,
+  apiLimiter
+} = require("./middleware/security");
+
+const {
+  notFoundHandler,
+  errorHandler
+} = require("./middleware/errorHandler");
+
+const authRoutes = require("./routes/authRoutes");
+const accountRoutes = require("./routes/accountRoutes");
+
+// =====================================
+// INITIALIZE APPLICATION
+// =====================================
+
+const app = express();
 const server = http.createServer(app);
 
-// Configure allowed frontend origins
-const allowedOrigins = process.env.CLIENT_URL
-  ? process.env.CLIENT_URL.split(",").map(origin => origin.trim())
-  : [];
-
-const originChecker = (origin, callback) => {
-  if (
-    !origin ||
-    allowedOrigins.length === 0 ||
-    allowedOrigins.includes(origin)
-  ) {
-    return callback(null, true);
-  }
-
-  return callback(new Error("Origin not allowed by CORS"));
-};
-
-// Initialize Socket.IO
-const io = new Server(server, {
-  cors: {
-    origin: originChecker,
-    methods: ["GET", "POST"],
-    credentials: true
-  }
-});
-
-// Trust Render's reverse proxy
+// Trust Render's reverse proxy.
 app.set("trust proxy", 1);
 
-// Disable Express identification header
+// Hide Express identification.
 app.disable("x-powered-by");
 
-// Security middleware
-app.use(helmet());
+// =====================================
+// SOCKET.IO CONFIGURATION
+// =====================================
 
-// CORS middleware
+const allowedOrigins = env.CLIENT_URL
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const io = new Server(server, {
+  cors: {
+    origin: (origin, callback) => {
+      // Native mobile applications may not send an Origin.
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error("Socket connection origin not allowed.")
+      );
+    },
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ["websocket", "polling"]
+});
+
+// =====================================
+// SECURITY MIDDLEWARE
+// =====================================
+
+app.use(securityHeaders);
+app.use(corsMiddleware);
+
+// =====================================
+// REQUEST BODY PARSING
+// =====================================
+
 app.use(
-  cors({
-    origin: originChecker,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+  express.json({
+    limit: "2mb"
   })
 );
 
-// Request body parsing
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "2mb"
+  })
+);
 
-// HTTP request logging
-app.use(morgan("dev"));
+// =====================================
+// REQUEST LOGGING
+// =====================================
 
-// API rate limiting
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 100,
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  message: {
-    success: false,
-    message: "Too many requests. Please try again later."
-  }
-});
+if (env.NODE_ENV !== "test") {
+  app.use(morgan("combined"));
+}
+
+// =====================================
+// GENERAL API RATE LIMITING
+// =====================================
 
 app.use("/api", apiLimiter);
 
-// Health check endpoint
+// =====================================
+// HEALTH CHECK
+// =====================================
+
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Skillvia API is running",
-    environment: process.env.NODE_ENV || "development",
+    message: "SKILVIA API is running.",
+    environment: env.NODE_ENV,
     timestamp: new Date().toISOString()
   });
 });
 
-// Socket.IO connection event
+// =====================================
+// AUTHENTICATION ROUTES
+// =====================================
+
+app.use("/api/auth", authRoutes);
+
+// =====================================
+// ACCOUNT SECURITY ROUTES
+// =====================================
+
+app.use("/api/account", accountRoutes);
+
+// =====================================
+// SOCKET CONNECTION EVENTS
+// =====================================
+
 io.on("connection", (socket) => {
-  console.log(`Socket connected: ${socket.id}`);
+  console.log(
+    `Socket connection established: ${socket.id}`
+  );
 
-  socket.on("disconnect", () => {
-    console.log(`Socket disconnected: ${socket.id}`);
+  socket.on("disconnect", (reason) => {
+    console.log(
+      `Socket disconnected: ${socket.id}. Reason: ${reason}`
+    );
   });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "API endpoint not found"
-  });
-});
+// =====================================
+// 404 HANDLER
+// =====================================
 
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error("Server error:", err.message);
+app.use(notFoundHandler);
 
-  if (res.headersSent) {
-    return next(err);
+// =====================================
+// GLOBAL ERROR HANDLER
+// =====================================
+
+app.use(errorHandler);
+
+// =====================================
+// START SERVER
+// =====================================
+
+let isShuttingDown = false;
+
+const startServer = async () => {
+  try {
+    await connectDatabase();
+
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+
+      server.listen(env.PORT, () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    });
+
+    console.log("--------------------------------");
+    console.log("SKILVIA BACKEND");
+    console.log("--------------------------------");
+    console.log(`Server running on port ${env.PORT}`);
+    console.log(`Environment: ${env.NODE_ENV}`);
+    console.log(`API: http://localhost:${env.PORT}/api`);
+    console.log(
+      `Health: http://localhost:${env.PORT}/api/health`
+    );
+    console.log("--------------------------------");
+
+  } catch (error) {
+    console.error(
+      "SKILVIA STARTUP FAILED:",
+      error.message
+    );
+
+    await closeDatabase().catch(() => {});
+
+    process.exit(1);
   }
-
-  const statusCode = err.status || err.statusCode || 500;
-
-  res.status(statusCode).json({
-    success: false,
-    message:
-      process.env.NODE_ENV === "production"
-        ? "An internal server error occurred"
-        : err.message
-  });
-});
-
-// Server port
-const PORT = process.env.PORT || 5000;
-
-// Start server
-server.listen(PORT, () => {
-  console.log("--------------------------------");
-  console.log("SKILVIA BACKEND");
-  console.log("--------------------------------");
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`API: http://localhost:${PORT}/api`);
-  console.log(`Health: http://localhost:${PORT}/api/health`);
-  console.log("--------------------------------");
-});
-
-// Graceful shutdown
-const shutdown = (signal) => {
-  console.log(`${signal} received. Shutting down server...`);
-
-  server.close(() => {
-    console.log("HTTP server closed.");
-    process.exit(0);
-  });
 };
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+// =====================================
+// GRACEFUL SHUTDOWN
+// =====================================
 
-// Export application objects
+const shutdown = async (signal) => {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+
+  console.log(`${signal} received. Shutting down SKILVIA...`);
+
+  const forceExit = setTimeout(() => {
+    console.error("Forced shutdown after timeout.");
+    process.exit(1);
+  }, 15000);
+
+  forceExit.unref();
+
+  try {
+    await new Promise((resolve) => {
+      io.close(() => {
+        resolve();
+      });
+    });
+
+    if (server.listening) {
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+
+    await closeDatabase();
+
+    clearTimeout(forceExit);
+
+    console.log("SKILVIA shutdown completed.");
+
+    process.exit(0);
+
+  } catch (error) {
+    console.error(
+      "SKILVIA shutdown error:",
+      error.message
+    );
+
+    process.exit(1);
+  }
+};
+
+// =====================================
+// PROCESS SIGNAL HANDLERS
+// =====================================
+
+process.on("SIGTERM", () => {
+  shutdown("SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  shutdown("SIGINT");
+});
+
+// =====================================
+// START APPLICATION
+// =====================================
+
+if (require.main === module) {
+  startServer();
+}
+
+// =====================================
+// EXPORT APPLICATION
+// =====================================
+
 module.exports = {
   app,
   server,
-  io
+  io,
+  startServer,
+  shutdown
 };
