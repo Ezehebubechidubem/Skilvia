@@ -1,15 +1,7 @@
 
 require("dotenv").config();
 
-// =====================================
-// LOAD ENVIRONMENT CONFIGURATION FIRST
-// =====================================
-
 const env = require("./config/environment");
-
-// =====================================
-// IMPORT DEPENDENCIES
-// =====================================
 
 const express = require("express");
 const http = require("http");
@@ -32,6 +24,8 @@ const {
   errorHandler
 } = require("./middleware/errorHandler");
 
+const socketAuthenticate = require("./middleware/socketAuthenticate");
+
 const authRoutes = require("./routes/authRoutes");
 const accountRoutes = require("./routes/accountRoutes");
 
@@ -42,10 +36,7 @@ const accountRoutes = require("./routes/accountRoutes");
 const app = express();
 const server = http.createServer(app);
 
-// Trust Render's reverse proxy.
 app.set("trust proxy", 1);
-
-// Hide Express identification.
 app.disable("x-powered-by");
 
 // =====================================
@@ -60,7 +51,6 @@ const allowedOrigins = env.CLIENT_URL
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-      // Native mobile applications may not send an Origin.
       if (!origin) {
         return callback(null, true);
       }
@@ -80,6 +70,12 @@ const io = new Server(server, {
 });
 
 // =====================================
+// SOCKET AUTHENTICATION
+// =====================================
+
+io.use(socketAuthenticate);
+
+// =====================================
 // SECURITY MIDDLEWARE
 // =====================================
 
@@ -90,11 +86,7 @@ app.use(corsMiddleware);
 // REQUEST BODY PARSING
 // =====================================
 
-app.use(
-  express.json({
-    limit: "2mb"
-  })
-);
+app.use(express.json({ limit: "2mb" }));
 
 app.use(
   express.urlencoded({
@@ -112,7 +104,7 @@ if (env.NODE_ENV !== "test") {
 }
 
 // =====================================
-// GENERAL API RATE LIMITING
+// API RATE LIMITING
 // =====================================
 
 app.use("/api", apiLimiter);
@@ -137,7 +129,7 @@ app.get("/api/health", (req, res) => {
 app.use("/api/auth", authRoutes);
 
 // =====================================
-// ACCOUNT SECURITY ROUTES
+// ACCOUNT ROUTES
 // =====================================
 
 app.use("/api/account", accountRoutes);
@@ -148,7 +140,11 @@ app.use("/api/account", accountRoutes);
 
 io.on("connection", (socket) => {
   console.log(
-    `Socket connection established: ${socket.id}`
+    `Authenticated socket connected: ${socket.id}`
+  );
+
+  console.log(
+    `SKILVIA user connected: ${socket.auth.userId}`
   );
 
   socket.on("disconnect", (reason) => {
@@ -234,9 +230,7 @@ const shutdown = async (signal) => {
 
   try {
     await new Promise((resolve) => {
-      io.close(() => {
-        resolve();
-      });
+      io.close(() => resolve());
     });
 
     if (server.listening) {
@@ -273,13 +267,8 @@ const shutdown = async (signal) => {
 // PROCESS SIGNAL HANDLERS
 // =====================================
 
-process.on("SIGTERM", () => {
-  shutdown("SIGTERM");
-});
-
-process.on("SIGINT", () => {
-  shutdown("SIGINT");
-});
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // =====================================
 // START APPLICATION
