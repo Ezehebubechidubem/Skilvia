@@ -4,13 +4,13 @@ const express = require("express");
 const router = express.Router();
 
 const authenticate = require("../middleware/authenticate");
-const requireAdminPermission = require("../middleware/requireAdminPermission");
+const requireSuperAdmin = require("../middleware/requireSuperAdmin");
 const validate = require("../middleware/validate");
 
 const {
   listAdminPermissionsSchema,
   listPermissionCatalogueSchema,
-  getAdminPermissionAssignmentsSchema,
+  getAdminAssignmentsSchema,
   grantAdminPermissionSchema,
   updateAdminPermissionSchema,
   revokeAdminPermissionSchema
@@ -19,62 +19,85 @@ const {
 const {
   getAdministrators,
   getPermissionCatalogue,
-  getAdministratorAssignments,
+  getAdminPermissions,
   grantPermission,
   updatePermissionExpiry,
   revokePermission
 } = require("../controllers/adminPermissionController");
 
-// All endpoints require an authenticated administrator.
-// Individual permissions are checked on each endpoint.
-router.use(authenticate);
 
-// View administrator accounts.
+// =====================================================
+// AUTHENTICATION AND AUTHORIZATION
+// =====================================================
+
+router.use(authenticate);
+router.use(requireSuperAdmin);
+
+
+// =====================================================
+// LIST ADMINISTRATORS
+// =====================================================
+
 router.get(
   "/administrators",
-  requireAdminPermission("admin.permissions.read"),
   validate(listAdminPermissionsSchema),
   getAdministrators
 );
 
-// View the available permission catalogue.
+
+// =====================================================
+// LIST AVAILABLE PERMISSIONS
+// =====================================================
+
 router.get(
   "/catalogue",
-  requireAdminPermission("admin.permissions.read"),
   validate(listPermissionCatalogueSchema),
   getPermissionCatalogue
 );
 
-// View permissions assigned to a particular administrator.
+
+// =====================================================
+// VIEW AN ADMINISTRATOR'S PERMISSIONS
+// =====================================================
+
 router.get(
   "/:adminId/permissions",
-  requireAdminPermission("admin.permissions.read"),
-  validate(getAdminPermissionAssignmentsSchema),
-  getAdministratorAssignments
+  validate(getAdminAssignmentsSchema),
+  getAdminPermissions
 );
 
-// Grant a permission to an administrator.
+
+// =====================================================
+// GRANT A PERMISSION
+// =====================================================
+
 router.post(
   "/:adminId/permissions",
-  requireAdminPermission("admin.permissions.manage"),
   validate(grantAdminPermissionSchema),
   grantPermission
 );
 
-// Change an existing permission's expiry date.
+
+// =====================================================
+// UPDATE PERMISSION EXPIRY
+// =====================================================
+
 router.patch(
   "/:adminId/permissions/:permissionKey",
-  requireAdminPermission("admin.permissions.manage"),
   validate(updateAdminPermissionSchema),
   updatePermissionExpiry
 );
 
-// Revoke an administrator's permission.
+
+// =====================================================
+// REVOKE A PERMISSION
+// =====================================================
+
 router.delete(
   "/:adminId/permissions/:permissionKey",
-  requireAdminPermission("admin.permissions.manage"),
   validate(revokeAdminPermissionSchema),
   revokePermission
 );
+
 
 module.exports = router;
