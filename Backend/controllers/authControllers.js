@@ -14,6 +14,8 @@ const {
   revokeAllUserRefreshTokens
 } = require("../utils/tokens");
 
+const getDeviceInfo = require("../utils/deviceInfo");
+
 // Dummy hash helps reduce timing differences when
 // an email address does not exist during login.
 const dummyPasswordHashPromise = hashPassword(
@@ -57,7 +59,6 @@ const register = async (req, res, next) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-
     const passwordHash = await hashPassword(password);
 
     // Public registration cannot create administrators.
@@ -176,7 +177,13 @@ const login = async (req, res, next) => {
       [user.id]
     );
 
-    const tokens = await createTokenPair(user);
+    // Collect device information and save it with the session.
+    const deviceInfo = getDeviceInfo(req);
+
+    const tokens = await createTokenPair(
+      user,
+      deviceInfo
+    );
 
     return res.status(200).json({
       success: true,
@@ -228,7 +235,10 @@ const logout = async (req, res, next) => {
       });
     }
 
-    await revokeRefreshToken(refreshToken);
+    await revokeRefreshToken(
+      refreshToken,
+      "user_logout"
+    );
 
     return res.status(200).json({
       success: true,
@@ -247,7 +257,10 @@ const logout = async (req, res, next) => {
 const logoutAll = async (req, res, next) => {
   try {
     const revokedSessions =
-      await revokeAllUserRefreshTokens(req.auth.userId);
+      await revokeAllUserRefreshTokens(
+        req.auth.userId,
+        "logout_all"
+      );
 
     return res.status(200).json({
       success: true,
