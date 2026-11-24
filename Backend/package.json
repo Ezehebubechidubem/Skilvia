@@ -2,7 +2,7 @@
 {
   "name": "skillvia-backend",
   "version": "1.0.0",
-  "description": "Backend API for the Skillvia professional services marketplace",
+  "description": "Backend API for the SKILVIA professional services marketplace",
   "main": "server.js",
   "private": true,
   "scripts": {
@@ -26,6 +26,7 @@
     "morgan": "^1.12.1",
     "multer": "^2.5.0",
     "pg": "^8.23.1",
+    "resend": "^6.39.0",
     "socket.io": "^4.8.4",
     "zod": "^4.6.7"
   },
