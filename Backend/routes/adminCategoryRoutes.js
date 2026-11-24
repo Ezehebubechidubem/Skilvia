@@ -10,9 +10,12 @@ const validate = require("../middleware/validate");
 const {
   createCategorySchema,
   updateCategorySchema,
-  updateCategoryStatusSchema,
-  deleteCategorySchema
+  updateCategoryStatusSchema
 } = require("../validators/adminCategorySchemas");
+
+const {
+  getAdminCategoryByIdSchema
+} = require("../validators/adminCategoryReadSchemas");
 
 const {
   createCategory,
@@ -60,7 +63,7 @@ router.post(
 router.get(
   "/:categoryId",
   requireAdminPermission("admin.categories.read"),
-  validate(deleteCategorySchema),
+  validate(getAdminCategoryByIdSchema),
   getCategoryById
 );
 
