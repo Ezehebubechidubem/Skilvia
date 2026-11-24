@@ -1,6 +1,4 @@
-
 const { pool } = require("../config/database");
-
 
 // =====================================================
 // GET ALL ACTIVE SERVICE CATEGORIES
@@ -17,17 +15,21 @@ const getCategories = async (req, res, next) => {
         sc.icon,
         sc.parent_id,
         sc.sort_order,
-        COUNT(DISTINCT ps.professional_profile_id)
+        COUNT(DISTINCT pp.id)
           FILTER (
             WHERE ps.is_active = TRUE
               AND pp.profile_status = 'published'
               AND pp.availability_status <> 'unavailable'
+              AND u.role = 'professional'
+              AND u.account_status = 'active'
           )::INTEGER AS active_professionals
        FROM service_categories sc
        LEFT JOIN professional_services ps
          ON ps.category_id = sc.id
        LEFT JOIN professional_profiles pp
          ON pp.id = ps.professional_profile_id
+       LEFT JOIN users u
+         ON u.id = pp.user_id
        WHERE sc.is_active = TRUE
        GROUP BY
         sc.id,
@@ -53,14 +55,13 @@ const getCategories = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
-// GET ONE CATEGORY BY ID
+// GET ONE ACTIVE CATEGORY BY ID
 // =====================================================
 
 const getCategoryById = async (req, res, next) => {
   try {
-    const { categoryId } = req.params;
+    const { categoryId } = req.validated.params;
 
     const result = await pool.query(
       `SELECT
@@ -71,17 +72,21 @@ const getCategoryById = async (req, res, next) => {
         sc.icon,
         sc.parent_id,
         sc.sort_order,
-        COUNT(DISTINCT ps.professional_profile_id)
+        COUNT(DISTINCT pp.id)
           FILTER (
             WHERE ps.is_active = TRUE
               AND pp.profile_status = 'published'
               AND pp.availability_status <> 'unavailable'
+              AND u.role = 'professional'
+              AND u.account_status = 'active'
           )::INTEGER AS active_professionals
        FROM service_categories sc
        LEFT JOIN professional_services ps
          ON ps.category_id = sc.id
        LEFT JOIN professional_profiles pp
          ON pp.id = ps.professional_profile_id
+       LEFT JOIN users u
+         ON u.id = pp.user_id
        WHERE sc.id = $1
          AND sc.is_active = TRUE
        GROUP BY
@@ -113,14 +118,13 @@ const getCategoryById = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
-// GET CATEGORY SUBCATEGORIES
+// GET ACTIVE CATEGORY SUBCATEGORIES
 // =====================================================
 
 const getSubcategories = async (req, res, next) => {
   try {
-    const { categoryId } = req.params;
+    const { categoryId } = req.validated.params;
 
     const parentResult = await pool.query(
       `SELECT id, name
@@ -150,7 +154,9 @@ const getSubcategories = async (req, res, next) => {
        FROM service_categories
        WHERE parent_id = $1
          AND is_active = TRUE
-       ORDER BY sort_order ASC, name ASC`,
+       ORDER BY
+        sort_order ASC,
+        name ASC`,
       [categoryId]
     );
 
@@ -166,6 +172,9 @@ const getSubcategories = async (req, res, next) => {
   }
 };
 
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   getCategories,
