@@ -14,13 +14,8 @@ const {
   revokeAllUserRefreshTokens
 } = require("../utils/tokens");
 
-// =====================================
-// DUMMY PASSWORD HASH
-// =====================================
-
-// Used when an email does not exist to reduce
-// differences in login response timing.
-
+// Dummy hash helps reduce timing differences when
+// an email address does not exist during login.
 const dummyPasswordHashPromise = hashPassword(
   "SKILVIA_DUMMY_PASSWORD_NOT_FOR_LOGIN_2026"
 );
@@ -36,11 +31,12 @@ const publicUser = (user) => ({
   phone: user.phone,
   role: user.role,
   account_status: user.account_status,
+  email_verified_at: user.email_verified_at || null,
   created_at: user.created_at
 });
 
 // =====================================
-// 1. REGISTER USER
+// REGISTER
 // =====================================
 
 const register = async (req, res, next) => {
@@ -53,7 +49,6 @@ const register = async (req, res, next) => {
       role
     } = req.validated.body;
 
-    // bcrypt supports a maximum of 72 password bytes.
     if (Buffer.byteLength(password, "utf8") > 72) {
       return res.status(400).json({
         success: false,
@@ -65,7 +60,7 @@ const register = async (req, res, next) => {
 
     const passwordHash = await hashPassword(password);
 
-    // Admin accounts cannot be created through public registration.
+    // Public registration cannot create administrators.
     const safeRole =
       role === "professional" ? "professional" : "customer";
 
@@ -85,6 +80,7 @@ const register = async (req, res, next) => {
         phone,
         role,
         account_status,
+        email_verified_at,
         created_at`,
       [
         full_name.trim(),
@@ -97,14 +93,14 @@ const register = async (req, res, next) => {
 
     const user = result.rows[0];
 
-    // Create and store the user's initial session.
-    const tokens = await createTokenPair(user);
-
+    // Registration does not require email verification.
+    // The user proceeds to the login screen.
     return res.status(201).json({
       success: true,
-      message: "Your SKILVIA account has been created successfully.",
-      user: publicUser(user),
-      tokens
+      message:
+        "Your SKILVIA account has been created successfully. Please log in.",
+      nextStep: "login",
+      user: publicUser(user)
     });
 
   } catch (error) {
@@ -113,7 +109,7 @@ const register = async (req, res, next) => {
 };
 
 // =====================================
-// 2. LOGIN USER
+// LOGIN
 // =====================================
 
 const login = async (req, res, next) => {
@@ -131,6 +127,7 @@ const login = async (req, res, next) => {
         password_hash,
         role,
         account_status,
+        email_verified_at,
         created_at
       FROM users
       WHERE LOWER(email) = $1
@@ -150,14 +147,12 @@ const login = async (req, res, next) => {
         );
       } else {
         const dummyHash = await dummyPasswordHashPromise;
-
         await verifyPassword(password, dummyHash);
       }
     } catch {
       passwordIsValid = false;
     }
 
-    // Use the same response for unknown emails and wrong passwords.
     if (!user || !passwordIsValid) {
       return res.status(401).json({
         success: false,
@@ -173,6 +168,7 @@ const login = async (req, res, next) => {
       });
     }
 
+    // Email verification is not required for login.
     await pool.query(
       `UPDATE users
        SET last_login_at = NOW()
@@ -180,8 +176,6 @@ const login = async (req, res, next) => {
       [user.id]
     );
 
-    // The token service checks the account status again
-    // before creating the session.
     const tokens = await createTokenPair(user);
 
     return res.status(200).json({
@@ -197,7 +191,7 @@ const login = async (req, res, next) => {
 };
 
 // =====================================
-// 3. REFRESH ACCESS TOKEN
+// REFRESH SESSION
 // =====================================
 
 const refresh = async (req, res, next) => {
@@ -218,15 +212,13 @@ const refresh = async (req, res, next) => {
 };
 
 // =====================================
-// 4. LOGOUT CURRENT SESSION
+// LOGOUT
 // =====================================
 
 const logout = async (req, res, next) => {
   try {
     const { refreshToken } = req.validated.body;
 
-    // Make sure the supplied refresh token belongs
-    // to the currently authenticated user.
     const decoded = verifyRefreshToken(refreshToken);
 
     if (decoded.sub !== req.auth.userId) {
@@ -249,14 +241,13 @@ const logout = async (req, res, next) => {
 };
 
 // =====================================
-// 5. LOGOUT ALL USER SESSIONS
+// LOGOUT ALL DEVICES
 // =====================================
 
 const logoutAll = async (req, res, next) => {
   try {
-    const revokedSessions = await revokeAllUserRefreshTokens(
-      req.auth.userId
-    );
+    const revokedSessions =
+      await revokeAllUserRefreshTokens(req.auth.userId);
 
     return res.status(200).json({
       success: true,
@@ -270,7 +261,7 @@ const logoutAll = async (req, res, next) => {
 };
 
 // =====================================
-// EXPORT AUTHENTICATION CONTROLLERS
+// EXPORT CONTROLLERS
 // =====================================
 
 module.exports = {
