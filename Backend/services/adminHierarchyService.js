@@ -12,7 +12,9 @@ class AdminHierarchyError extends Error {
   }
 }
 
-const SALT_ROUNDS = Number(process.env.BCRYPT_SALT_ROUNDS || 12);
+const SALT_ROUNDS = Number(
+  process.env.BCRYPT_SALT_ROUNDS || 12
+);
 
 
 // =====================================================
@@ -48,7 +50,10 @@ const withTransaction = async (callback) => {
 // VERIFY MAIN ADMINISTRATOR
 // =====================================================
 
-const validateSuperAdmin = async (client, actorUserId) => {
+const validateSuperAdmin = async (
+  client,
+  actorUserId
+) => {
   const result = await client.query(
     `
       SELECT id
@@ -127,12 +132,17 @@ const listAdministrators = async ({
 
   if (admin_type) {
     values.push(admin_type);
-    conditions.push(`admin_type = $${values.length}`);
+    conditions.push(
+      `admin_type = $${values.length}`
+    );
   }
 
   if (account_status) {
     values.push(account_status);
-    conditions.push(`account_status = $${values.length}`);
+
+    conditions.push(
+      `account_status = $${values.length}`
+    );
   }
 
   const whereClause = conditions.join(" AND ");
@@ -162,7 +172,10 @@ const listAdministrators = async ({
       FROM users
       WHERE ${whereClause}
       ORDER BY
-        CASE WHEN admin_type = 'super_admin' THEN 0 ELSE 1 END,
+        CASE
+          WHEN admin_type = 'super_admin' THEN 0
+          ELSE 1
+        END,
         created_at ASC
       LIMIT $${values.length + 1}
       OFFSET $${values.length + 2}
@@ -240,12 +253,18 @@ const createSubAdmin = async (
     );
   }
 
-  const passwordHash = await bcrypt.hash(
-    data.password,
-    SALT_ROUNDS
-  );
+  if (
+    typeof data.password !== "string" ||
+    Buffer.byteLength(data.password, "utf8") > 72
+  ) {
+    throw new AdminHierarchyError(
+      "Password must not exceed 72 bytes.",
+      400
+    );
+  }
 
   return withTransaction(async (client) => {
+    // Verify authority before expensive password hashing.
     await validateSuperAdmin(client, actorUserId);
 
     const existingUser = await client.query(
@@ -266,6 +285,11 @@ const createSubAdmin = async (
       );
     }
 
+    const passwordHash = await bcrypt.hash(
+      data.password,
+      SALT_ROUNDS
+    );
+
     const result = await client.query(
       `
         INSERT INTO users (
@@ -277,7 +301,15 @@ const createSubAdmin = async (
           admin_type,
           account_status
         )
-        VALUES ($1, $2, $3, $4, 'admin', 'sub_admin', 'active')
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          'admin',
+          'sub_admin',
+          'active'
+        )
         RETURNING
           id,
           full_name,
@@ -405,8 +437,8 @@ const updateSubAdminStatus = async (
 
     const updatedAdmin = result.rows[0];
 
-    // Revoke every active refresh-token session when
-    // a sub-admin is suspended or deactivated.
+    // Revoke active refresh-token sessions when access
+    // is suspended or deactivated.
     if (accountStatus !== "active") {
       await client.query(
         `
@@ -435,6 +467,10 @@ const updateSubAdminStatus = async (
   });
 };
 
+
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   AdminHierarchyError,
