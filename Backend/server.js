@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const env = require("./config/environment");
@@ -38,6 +37,7 @@ const sessionRoutes = require("./routes/sessionRoutes");
 
 const professionalRoutes = require("./routes/professionalRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
+const publicServiceRoutes = require("./routes/publicServiceRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
 
 const adminCategoryRoutes = require("./routes/adminCategoryRoutes");
@@ -193,10 +193,20 @@ app.use("/api/professionals", professionalRoutes);
 
 
 // =====================================================
-// PROFESSIONAL SERVICE ROUTES
+// PROFESSIONAL SERVICE MANAGEMENT
 // =====================================================
 
 app.use("/api/services", serviceRoutes);
+
+
+// =====================================================
+// PUBLIC SERVICE DISCOVERY
+// =====================================================
+
+app.use(
+  "/api/discovery/services",
+  publicServiceRoutes
+);
 
 
 // =====================================================
