@@ -4,7 +4,7 @@ const express = require("express");
 const router = express.Router();
 
 const authenticate = require("../middleware/authenticate");
-const requireAdminPermission = require("../middleware/requireAdminPermission");
+const requireSuperAdmin = require("../middleware/requireSuperAdmin");
 const validate = require("../middleware/validate");
 
 const {
@@ -19,35 +19,34 @@ const {
 
 
 // =====================================================
-// AUTHENTICATION
+// AUTHENTICATION AND AUTHORIZATION
 // =====================================================
 
 router.use(authenticate);
 
+// Complete audit-log access is restricted to the
+// active main administrator.
+
+router.use(requireSuperAdmin);
+
 
 // =====================================================
-// LIST ADMIN AUDIT LOGS
+// VIEW AUDIT LOGS
 // =====================================================
-
-// GET /api/admin/audit-logs
 
 router.get(
   "/",
-  requireAdminPermission("admin.audit.read"),
   validate(getAdminAuditLogSchema),
   getAdminAuditLogs
 );
 
 
 // =====================================================
-// GET ONE ADMIN AUDIT RECORD
+// VIEW ONE AUDIT LOG
 // =====================================================
-
-// GET /api/admin/audit-logs/:auditLogId
 
 router.get(
   "/:auditLogId",
-  requireAdminPermission("admin.audit.read"),
   validate(getAdminAuditLogByIdSchema),
   getAdminAuditLogById
 );
