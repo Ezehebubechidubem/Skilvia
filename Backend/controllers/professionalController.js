@@ -1,6 +1,82 @@
-
 const { pool } = require("../config/database");
 
+// =====================================================
+// PROFESSIONAL PROFILE DATABASE FIELDS
+// =====================================================
+
+const PRIVATE_PROFILE_COLUMNS = `
+  id,
+  business_name,
+  professional_title,
+  bio,
+  years_of_experience,
+  profile_photo_url,
+  cover_photo_url,
+  country,
+  state,
+  city,
+  service_area,
+  latitude,
+  longitude,
+  availability_status,
+  profile_status,
+  average_rating,
+  total_reviews,
+  completed_jobs,
+  created_at,
+  updated_at
+`;
+
+const PUBLIC_PROFILE_COLUMNS = `
+  pp.id,
+  u.full_name,
+  pp.business_name,
+  pp.professional_title,
+  pp.bio,
+  pp.years_of_experience,
+  pp.profile_photo_url,
+  pp.cover_photo_url,
+  pp.country,
+  pp.state,
+  pp.city,
+  pp.service_area,
+  pp.availability_status,
+  pp.average_rating,
+  pp.total_reviews,
+  pp.completed_jobs,
+  pp.created_at
+`;
+
+const ALLOWED_UPDATE_FIELDS = new Set([
+  "business_name",
+  "professional_title",
+  "bio",
+  "years_of_experience",
+  "country",
+  "state",
+  "city",
+  "service_area",
+  "latitude",
+  "longitude",
+  "availability_status"
+]);
+
+// =====================================================
+// PROFESSIONAL ROLE CHECK
+// =====================================================
+
+const requireProfessional = (req, res) => {
+  if (req.auth.role !== "professional") {
+    res.status(403).json({
+      success: false,
+      message: "This feature is only available to professional accounts."
+    });
+
+    return false;
+  }
+
+  return true;
+};
 
 // =====================================================
 // CREATE PROFESSIONAL PROFILE
@@ -8,30 +84,12 @@ const { pool } = require("../config/database");
 
 const createProfile = async (req, res, next) => {
   try {
-    if (req.auth.role !== "professional") {
-      return res.status(403).json({
-        success: false,
-        message: "Only professional accounts can create professional profiles."
-      });
+    if (!requireProfessional(req, res)) {
+      return;
     }
 
     const userId = req.auth.userId;
     const data = req.validated.body;
-
-    const existingProfile = await pool.query(
-      `SELECT id
-       FROM professional_profiles
-       WHERE user_id = $1
-       LIMIT 1`,
-      [userId]
-    );
-
-    if (existingProfile.rowCount > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "You already have a professional profile."
-      });
-    }
 
     const result = await pool.query(
       `INSERT INTO professional_profiles (
@@ -52,7 +110,7 @@ const createProfile = async (req, res, next) => {
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11, $12
       )
-      RETURNING *`,
+      RETURNING ${PRIVATE_PROFILE_COLUMNS}`,
       [
         userId,
         data.business_name ?? null,
@@ -87,22 +145,18 @@ const createProfile = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
 // GET LOGGED-IN PROFESSIONAL PROFILE
 // =====================================================
 
 const getMyProfile = async (req, res, next) => {
   try {
-    if (req.auth.role !== "professional") {
-      return res.status(403).json({
-        success: false,
-        message: "This feature is only available to professional accounts."
-      });
+    if (!requireProfessional(req, res)) {
+      return;
     }
 
     const result = await pool.query(
-      `SELECT *
+      `SELECT ${PRIVATE_PROFILE_COLUMNS}
        FROM professional_profiles
        WHERE user_id = $1
        LIMIT 1`,
@@ -126,38 +180,20 @@ const getMyProfile = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
 // UPDATE PROFESSIONAL PROFILE
 // =====================================================
 
 const updateProfile = async (req, res, next) => {
   try {
-    if (req.auth.role !== "professional") {
-      return res.status(403).json({
-        success: false,
-        message: "Only professional accounts can update professional profiles."
-      });
+    if (!requireProfessional(req, res)) {
+      return;
     }
 
     const data = req.validated.body;
 
-    const allowedFields = [
-      "business_name",
-      "professional_title",
-      "bio",
-      "years_of_experience",
-      "country",
-      "state",
-      "city",
-      "service_area",
-      "latitude",
-      "longitude",
-      "availability_status"
-    ];
-
     const fields = Object.keys(data).filter(
-      (field) => allowedFields.includes(field)
+      (field) => ALLOWED_UPDATE_FIELDS.has(field)
     );
 
     if (fields.length === 0) {
@@ -179,7 +215,7 @@ const updateProfile = async (req, res, next) => {
       `UPDATE professional_profiles
        SET ${assignments.join(", ")}
        WHERE user_id = $${values.length}
-       RETURNING *`,
+       RETURNING ${PRIVATE_PROFILE_COLUMNS}`,
       values
     );
 
@@ -201,18 +237,14 @@ const updateProfile = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
 // UPDATE PROFESSIONAL AVAILABILITY
 // =====================================================
 
 const updateAvailability = async (req, res, next) => {
   try {
-    if (req.auth.role !== "professional") {
-      return res.status(403).json({
-        success: false,
-        message: "Only professional accounts can change availability."
-      });
+    if (!requireProfessional(req, res)) {
+      return;
     }
 
     const { availability_status } = req.validated.body;
@@ -246,7 +278,6 @@ const updateAvailability = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
 // GET PUBLIC PROFESSIONAL PROFILE
 // =====================================================
@@ -257,24 +288,7 @@ const getPublicProfile = async (req, res, next) => {
 
     const profileResult = await pool.query(
       `SELECT
-        pp.id,
-        pp.user_id,
-        u.full_name,
-        pp.business_name,
-        pp.professional_title,
-        pp.bio,
-        pp.years_of_experience,
-        pp.profile_photo_url,
-        pp.cover_photo_url,
-        pp.country,
-        pp.state,
-        pp.city,
-        pp.service_area,
-        pp.availability_status,
-        pp.average_rating,
-        pp.total_reviews,
-        pp.completed_jobs,
-        pp.created_at
+        ${PUBLIC_PROFILE_COLUMNS}
        FROM professional_profiles pp
        INNER JOIN users u
          ON u.id = pp.user_id
@@ -311,7 +325,9 @@ const getPublicProfile = async (req, res, next) => {
        WHERE ps.professional_profile_id = $1
          AND ps.is_active = TRUE
          AND sc.is_active = TRUE
-       ORDER BY sc.sort_order ASC, ps.service_title ASC`,
+       ORDER BY
+         sc.sort_order ASC,
+         ps.service_title ASC`,
       [profileId]
     );
 
@@ -328,6 +344,9 @@ const getPublicProfile = async (req, res, next) => {
   }
 };
 
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   createProfile,
