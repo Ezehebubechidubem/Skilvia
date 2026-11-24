@@ -52,6 +52,9 @@ const adminPlatformSettingsRoutes =
 const adminPermissionRoutes =
   require("./routes/adminPermissionRoutes");
 
+const adminHierarchyRoutes =
+  require("./routes/adminHierarchyRoutes");
+
 
 // =====================================================
 // EXPRESS APPLICATION
@@ -247,14 +250,19 @@ app.use(
 // ADMIN PERMISSION MANAGEMENT
 // =====================================================
 
-// View administrators and permission catalogue.
-// Grant, update and revoke administrator permissions.
-//
-// Every endpoint has its own permission check.
-
 app.use(
   "/api/admin/permissions",
   adminPermissionRoutes
+);
+
+
+// =====================================================
+// ADMIN HIERARCHY MANAGEMENT
+// =====================================================
+
+app.use(
+  "/api/admin/hierarchy",
+  adminHierarchyRoutes
 );
 
 
