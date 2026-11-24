@@ -49,6 +49,9 @@ const publicPlatformSettingsRoutes =
 const adminPlatformSettingsRoutes =
   require("./routes/adminPlatformSettingsRoutes");
 
+const adminPermissionRoutes =
+  require("./routes/adminPermissionRoutes");
+
 
 // =====================================================
 // EXPRESS APPLICATION
@@ -61,7 +64,6 @@ const server = http.createServer(app);
 app.disable("x-powered-by");
 
 // Render runs behind a reverse proxy.
-// Trust one proxy hop for forwarded client information.
 app.set("trust proxy", 1);
 
 
@@ -205,11 +207,6 @@ app.use("/api/categories", categoryRoutes);
 // PUBLIC PLATFORM SETTINGS
 // =====================================================
 
-// GET /api/settings/public
-//
-// No authentication required.
-// Only settings marked as public are returned.
-
 app.use(
   "/api/settings",
   publicPlatformSettingsRoutes
@@ -240,11 +237,24 @@ app.use(
 // ADMIN PLATFORM SETTINGS
 // =====================================================
 
-// All routes require authentication and admin authorization.
-
 app.use(
   "/api/admin/platform-settings",
   adminPlatformSettingsRoutes
+);
+
+
+// =====================================================
+// ADMIN PERMISSION MANAGEMENT
+// =====================================================
+
+// View administrators and permission catalogue.
+// Grant, update and revoke administrator permissions.
+//
+// Every endpoint has its own permission check.
+
+app.use(
+  "/api/admin/permissions",
+  adminPermissionRoutes
 );
 
 
