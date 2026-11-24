@@ -28,6 +28,7 @@ const socketAuthenticate = require("./middleware/socketAuthenticate");
 
 const authRoutes = require("./routes/authRoutes");
 const accountRoutes = require("./routes/accountRoutes");
+const sessionRoutes = require("./routes/sessionRoutes");
 
 // =====================================
 // INITIALIZE APPLICATION
@@ -135,6 +136,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/account", accountRoutes);
 
 // =====================================
+// SESSION MANAGEMENT ROUTES
+// =====================================
+
+app.use("/api/sessions", sessionRoutes);
+
+// =====================================
 // SOCKET CONNECTION EVENTS
 // =====================================
 
@@ -167,7 +174,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // =====================================
-// START SERVER
+// SERVER STARTUP
 // =====================================
 
 let isShuttingDown = false;
@@ -177,12 +184,20 @@ const startServer = async () => {
     await connectDatabase();
 
     await new Promise((resolve, reject) => {
-      server.once("error", reject);
+      const onError = (error) => {
+        server.removeListener("listening", onListening);
+        reject(error);
+      };
 
-      server.listen(env.PORT, () => {
-        server.removeListener("error", reject);
+      const onListening = () => {
+        server.removeListener("error", onError);
         resolve();
-      });
+      };
+
+      server.once("error", onError);
+      server.once("listening", onListening);
+
+      server.listen(env.PORT);
     });
 
     console.log("--------------------------------");
@@ -204,7 +219,7 @@ const startServer = async () => {
 
     await closeDatabase().catch(() => {});
 
-    process.exit(1);
+    process.exitCode = 1;
   }
 };
 
@@ -219,7 +234,9 @@ const shutdown = async (signal) => {
 
   isShuttingDown = true;
 
-  console.log(`${signal} received. Shutting down SKILVIA...`);
+  console.log(
+    `${signal} received. Shutting down SKILVIA...`
+  );
 
   const forceExit = setTimeout(() => {
     console.error("Forced shutdown after timeout.");
@@ -229,21 +246,10 @@ const shutdown = async (signal) => {
   forceExit.unref();
 
   try {
+    // Closing Socket.IO also closes its HTTP server.
     await new Promise((resolve) => {
       io.close(() => resolve());
     });
-
-    if (server.listening) {
-      await new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
-    }
 
     await closeDatabase();
 
@@ -251,15 +257,16 @@ const shutdown = async (signal) => {
 
     console.log("SKILVIA shutdown completed.");
 
-    process.exit(0);
-
   } catch (error) {
     console.error(
       "SKILVIA shutdown error:",
       error.message
     );
 
-    process.exit(1);
+    process.exitCode = 1;
+
+  } finally {
+    clearTimeout(forceExit);
   }
 };
 
