@@ -1,3 +1,4 @@
+
 const crypto = require("crypto");
 
 const { pool } = require("../config/database");
@@ -7,19 +8,11 @@ const {
   assertCloudinaryConfigured
 } = require("../config/cloudinary");
 
-const env = require("../config/environment");
-
 const {
   ProfessionalVerificationError
 } = require("./professionalVerificationService");
 
-
-// =====================================================
-// CONSTANTS
-// =====================================================
-
 const UPLOAD_SESSION_DURATION_MS = 5 * 60 * 1000;
-
 const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
 
 const ALLOWED_IMAGE_FORMATS = [
@@ -29,9 +22,7 @@ const ALLOWED_IMAGE_FORMATS = [
   "webp"
 ];
 
-const ALLOWED_RAW_FORMATS = [
-  "pdf"
-];
+const ALLOWED_RAW_FORMATS = ["pdf"];
 
 const ALLOWED_DOCUMENT_TYPES = [
   "national_id",
@@ -43,33 +34,13 @@ const ALLOWED_DOCUMENT_TYPES = [
   "selfie"
 ];
 
-
-// =====================================================
-// ERROR HANDLING
-// =====================================================
-
-const createUploadError = (
-  message,
-  statusCode = 400,
-  code = "PROFESSIONAL_UPLOAD_ERROR"
-) => {
-  const error = new ProfessionalVerificationError(message);
-
-  error.statusCode = statusCode;
-  error.code = code;
-
-  return error;
+const createUploadError = (message, statusCode = 400) => {
+  return new ProfessionalVerificationError(message, statusCode);
 };
-
-
-// =====================================================
-// TOKEN GENERATION
-// =====================================================
 
 const generateUploadToken = () => {
   return crypto.randomBytes(32).toString("hex");
 };
-
 
 const hashUploadToken = (token) => {
   return crypto
@@ -78,48 +49,29 @@ const hashUploadToken = (token) => {
     .digest("hex");
 };
 
-
-// =====================================================
-// DOCUMENT VALIDATION
-// =====================================================
-
 const getDocumentResourceType = (documentType, fileFormat) => {
   if (!ALLOWED_DOCUMENT_TYPES.includes(documentType)) {
-    throw createUploadError(
-      "Unsupported verification document type."
-    );
+    throw createUploadError("Unsupported verification document type.");
   }
 
-  const normalizedFormat = String(fileFormat || "")
-    .toLowerCase();
+  const normalizedFormat = String(fileFormat).toLowerCase();
 
   if (
     !ALLOWED_IMAGE_FORMATS.includes(normalizedFormat) &&
     !ALLOWED_RAW_FORMATS.includes(normalizedFormat)
   ) {
-    throw createUploadError(
-      "Unsupported document file format."
-    );
+    throw createUploadError("Unsupported document file format.");
   }
 
   if (
     documentType === "selfie" &&
     normalizedFormat === "pdf"
   ) {
-    throw createUploadError(
-      "A selfie must be uploaded as an image."
-    );
+    throw createUploadError("A selfie must be uploaded as an image.");
   }
 
-  return ALLOWED_RAW_FORMATS.includes(normalizedFormat)
-    ? "raw"
-    : "image";
+  return normalizedFormat === "pdf" ? "raw" : "image";
 };
-
-
-// =====================================================
-// CREATE VERIFICATION UPLOAD AUTHORIZATION
-// =====================================================
 
 const createVerificationUploadSession = async (
   userId,
@@ -129,18 +81,9 @@ const createVerificationUploadSession = async (
 ) => {
   assertCloudinaryConfigured();
 
-  if (!userId || !applicationId) {
-    throw createUploadError(
-      "Professional and application identifiers are required."
-    );
-  }
-
-  const normalizedFormat = String(fileFormat || "")
-    .toLowerCase();
-
   const resourceType = getDocumentResourceType(
     documentType,
-    normalizedFormat
+    fileFormat
   );
 
   const client = await pool.connect();
@@ -148,28 +91,26 @@ const createVerificationUploadSession = async (
   try {
     await client.query("BEGIN");
 
-    // -------------------------------------------------
-    // VERIFY PROFESSIONAL OWNERSHIP
-    // -------------------------------------------------
-
+    // Lock the professional profile to serialize verification changes.
     const profileResult = await client.query(
       `
         SELECT
           pp.id AS professional_profile_id,
+          pp.verification_status,
           u.role,
           u.account_status
         FROM professional_profiles pp
         INNER JOIN users u
           ON u.id = pp.user_id
-        WHERE pp.user_id = $1
+        WHERE u.id = $1
         FOR UPDATE OF pp
       `,
       [userId]
     );
 
-    if (profileResult.rowCount === 0) {
+    if (profileResult.rows.length === 0) {
       throw createUploadError(
-        "Professional profile was not found.",
+        "Professional profile not found.",
         404
       );
     }
@@ -178,7 +119,7 @@ const createVerificationUploadSession = async (
 
     if (profile.role !== "professional") {
       throw createUploadError(
-        "Only professional accounts can upload verification documents.",
+        "Only professionals can upload verification documents.",
         403
       );
     }
@@ -190,10 +131,21 @@ const createVerificationUploadSession = async (
       );
     }
 
-    // -------------------------------------------------
-    // VERIFY APPLICATION OWNERSHIP
-    // -------------------------------------------------
+    if (profile.verification_status === "approved") {
+      throw createUploadError(
+        "Your verification has already been approved. Your identification documents are locked.",
+        409
+      );
+    }
 
+    if (profile.verification_status === "pending") {
+      throw createUploadError(
+        "Your verification is under review. Document uploads are locked.",
+        409
+      );
+    }
+
+    // Only draft applications accept new document uploads.
     const applicationResult = await client.query(
       `
         SELECT
@@ -210,27 +162,24 @@ const createVerificationUploadSession = async (
       ]
     );
 
-    if (applicationResult.rowCount === 0) {
+    if (applicationResult.rows.length === 0) {
       throw createUploadError(
-        "Verification application was not found.",
+        "Verification application not found.",
         404
       );
     }
 
-    if (applicationResult.rows[0].status !== "pending") {
+    const application = applicationResult.rows[0];
+
+    if (application.status !== "draft") {
       throw createUploadError(
-        "Documents can only be uploaded to a pending verification application.",
+        "Documents can only be uploaded while your verification application is a draft.",
         409
       );
     }
 
-    // -------------------------------------------------
-    // GENERATE SECURE UPLOAD IDENTIFIERS
-    // -------------------------------------------------
-
-    const uploadToken = generateUploadToken();
-
-    const tokenHash = hashUploadToken(uploadToken);
+    const token = generateUploadToken();
+    const tokenHash = hashUploadToken(token);
 
     const publicId = [
       "skilvia",
@@ -246,11 +195,7 @@ const createVerificationUploadSession = async (
       Date.now() + UPLOAD_SESSION_DURATION_MS
     );
 
-    // -------------------------------------------------
-    // GENERATE CLOUDINARY SIGNATURE
-    // -------------------------------------------------
-
-    const signatureParameters = {
+    const uploadParameters = {
       public_id: publicId,
       timestamp,
       type: "authenticated",
@@ -258,13 +203,9 @@ const createVerificationUploadSession = async (
     };
 
     const signature = cloudinary.utils.api_sign_request(
-      signatureParameters,
-      env.CLOUDINARY_API_SECRET
+      uploadParameters,
+      process.env.CLOUDINARY_API_SECRET
     );
-
-    // -------------------------------------------------
-    // STORE UPLOAD SESSION
-    // -------------------------------------------------
 
     await client.query(
       `
@@ -292,54 +233,40 @@ const createVerificationUploadSession = async (
 
     await client.query("COMMIT");
 
-    // -------------------------------------------------
-    // RETURN UPLOAD AUTHORIZATION
-    // -------------------------------------------------
-
     return {
-      upload_token: uploadToken,
-
-      upload: {
-        cloud_name: env.CLOUDINARY_CLOUD_NAME,
-        api_key: env.CLOUDINARY_API_KEY,
-        timestamp,
-        signature,
-        public_id: publicId,
-        type: "authenticated",
-        overwrite: false,
-        resource_type: resourceType,
-        upload_url:
-          `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`
-      },
-
+      upload_token: token,
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      timestamp,
+      signature,
+      public_id: publicId,
+      type: "authenticated",
+      overwrite: false,
+      resource_type: resourceType,
+      upload_url:
+        `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
       restrictions: {
         max_file_size_bytes: MAX_DOCUMENT_SIZE_BYTES,
-        allowed_formats: [
-          ...ALLOWED_IMAGE_FORMATS,
-          ...ALLOWED_RAW_FORMATS
-        ]
+        allowed_formats:
+          resourceType === "raw"
+            ? ALLOWED_RAW_FORMATS
+            : ALLOWED_IMAGE_FORMATS
       },
-
-      expires_at: expiresAt.toISOString()
+      expires_at: expiresAt
     };
-
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
-
   } finally {
     client.release();
   }
 };
 
-
-// =====================================================
-// EXPORTS
-// =====================================================
-
 module.exports = {
   createVerificationUploadSession,
+  hashUploadToken,
   MAX_DOCUMENT_SIZE_BYTES,
   ALLOWED_IMAGE_FORMATS,
-  ALLOWED_RAW_FORMATS
+  ALLOWED_RAW_FORMATS,
+  ALLOWED_DOCUMENT_TYPES
 };
