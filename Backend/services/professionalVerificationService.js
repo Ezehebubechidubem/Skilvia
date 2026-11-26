@@ -14,11 +14,8 @@ const withTransaction = async (callback) => {
 
   try {
     await client.query("BEGIN");
-
     const result = await callback(client);
-
     await client.query("COMMIT");
-
     return result;
   } catch (error) {
     await client.query("ROLLBACK");
@@ -44,15 +41,14 @@ const getProfessionalVerificationProfile = async (
         u.role,
         u.account_status
       FROM professional_profiles pp
-      INNER JOIN users u
-        ON u.id = pp.user_id
+      INNER JOIN users u ON u.id = pp.user_id
       WHERE u.id = $1
       ${lock ? "FOR UPDATE OF pp" : ""}
     `,
     [userId]
   );
 
-  if (result.rows.length === 0) {
+  if (!result.rows.length) {
     throw new ProfessionalVerificationError(
       "Professional profile not found.",
       404
@@ -78,9 +74,6 @@ const getProfessionalVerificationProfile = async (
   return profile;
 };
 
-// Create a new draft application.
-// A new application is permitted only for first-time applicants
-// or professionals whose previous verification was rejected.
 const submitVerificationApplication = async (userId, data) => {
   return withTransaction(async (client) => {
     const profile = await getProfessionalVerificationProfile(
@@ -91,7 +84,7 @@ const submitVerificationApplication = async (userId, data) => {
 
     if (profile.verification_status === "approved") {
       throw new ProfessionalVerificationError(
-        "Your professional verification is permanently approved. You cannot submit another application.",
+        "Your verification is permanently approved. You cannot submit another application.",
         409
       );
     }
@@ -114,12 +107,39 @@ const submitVerificationApplication = async (userId, data) => {
       );
     }
 
-    // Retrieve the most recently updated application.
-    const latestApplicationResult = await client.query(
+    // If a draft already exists, return it instead of creating another.
+    const existingDraftResult = await client.query(
       `
         SELECT
           id,
-          status
+          status,
+          legal_full_name,
+          date_of_birth,
+          country,
+          state,
+          city,
+          submitted_at,
+          updated_at
+        FROM professional_verification_applications
+        WHERE professional_profile_id = $1
+          AND status = 'draft'
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `,
+      [profile.professional_profile_id]
+    );
+
+    if (existingDraftResult.rows.length) {
+      return {
+        message: "Your existing verification draft is ready to continue.",
+        application: existingDraftResult.rows[0],
+        resumed: true
+      };
+    }
+
+    const latestApplicationResult = await client.query(
+      `
+        SELECT id, status
         FROM professional_verification_applications
         WHERE professional_profile_id = $1
         ORDER BY updated_at DESC, submitted_at DESC
@@ -130,49 +150,29 @@ const submitVerificationApplication = async (userId, data) => {
 
     const latestApplication = latestApplicationResult.rows[0];
 
-    if (profile.verification_status === "rejected") {
-      if (
-        !latestApplication ||
-        latestApplication.status !== "rejected"
-      ) {
-        throw new ProfessionalVerificationError(
-          "A new application can only be created after your previous application has been rejected.",
-          409
-        );
-      }
-    }
-
+    // A first-time applicant must not have an unexplained old record.
     if (
       profile.verification_status === "not_submitted" &&
       latestApplication
     ) {
       throw new ProfessionalVerificationError(
-        "Your verification records require review before another application can be created.",
+        "Your previous verification record requires review before another application can be created.",
         409
       );
     }
 
-    // Never create a second draft.
-    const existingDraft = await client.query(
-      `
-        SELECT id
-        FROM professional_verification_applications
-        WHERE professional_profile_id = $1
-          AND status = 'draft'
-        LIMIT 1
-      `,
-      [profile.professional_profile_id]
-    );
-
-    if (existingDraft.rows.length > 0) {
+    // Resubmission is permitted only after an actual rejection.
+    if (
+      profile.verification_status === "rejected" &&
+      (!latestApplication || latestApplication.status !== "rejected")
+    ) {
       throw new ProfessionalVerificationError(
-        "You already have a draft verification application. Continue with that application.",
+        "You can only apply again after your previous verification has been rejected.",
         409
       );
     }
 
-    // Never allow another application while one is pending.
-    const existingPending = await client.query(
+    const pendingResult = await client.query(
       `
         SELECT id
         FROM professional_verification_applications
@@ -183,15 +183,13 @@ const submitVerificationApplication = async (userId, data) => {
       [profile.professional_profile_id]
     );
 
-    if (existingPending.rows.length > 0) {
+    if (pendingResult.rows.length) {
       throw new ProfessionalVerificationError(
         "Your verification is already awaiting review.",
         409
       );
     }
 
-    // Insert a NEW application.
-    // Previous rejected applications and their documents are preserved.
     const applicationResult = await client.query(
       `
         INSERT INTO professional_verification_applications (
@@ -231,7 +229,8 @@ const submitVerificationApplication = async (userId, data) => {
       message: latestApplication
         ? "A new verification draft has been created following your previous rejection."
         : "Verification draft created successfully.",
-      application: applicationResult.rows[0]
+      application: applicationResult.rows[0],
+      resumed: false
     };
   });
 };
@@ -299,13 +298,10 @@ const getVerificationApplication = async (
         AND professional_profile_id = $2
       LIMIT 1
     `,
-    [
-      applicationId,
-      profile.professional_profile_id
-    ]
+    [applicationId, profile.professional_profile_id]
   );
 
-  if (applicationResult.rows.length === 0) {
+  if (!applicationResult.rows.length) {
     throw new ProfessionalVerificationError(
       "Verification application not found.",
       404
