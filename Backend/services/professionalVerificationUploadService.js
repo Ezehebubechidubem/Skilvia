@@ -33,9 +33,19 @@ const ALLOWED_RAW_FORMATS = [
   "pdf"
 ];
 
+const ALLOWED_DOCUMENT_TYPES = [
+  "national_id",
+  "drivers_license",
+  "international_passport",
+  "voters_card",
+  "proof_of_address",
+  "business_registration",
+  "selfie"
+];
+
 
 // =====================================================
-// ERROR HANDLER
+// ERROR HANDLING
 // =====================================================
 
 const createUploadError = (
@@ -70,27 +80,40 @@ const hashUploadToken = (token) => {
 
 
 // =====================================================
-// DOCUMENT CONFIGURATION
+// DOCUMENT VALIDATION
 // =====================================================
 
-const getDocumentResourceType = (documentType) => {
-  if (
-    ![
-      "national_id",
-      "drivers_license",
-      "international_passport",
-      "voters_card",
-      "proof_of_address",
-      "business_registration",
-      "selfie"
-    ].includes(documentType)
-  ) {
+const getDocumentResourceType = (documentType, fileFormat) => {
+  if (!ALLOWED_DOCUMENT_TYPES.includes(documentType)) {
     throw createUploadError(
       "Unsupported verification document type."
     );
   }
 
-  return "image";
+  const normalizedFormat = String(fileFormat || "")
+    .toLowerCase();
+
+  if (
+    !ALLOWED_IMAGE_FORMATS.includes(normalizedFormat) &&
+    !ALLOWED_RAW_FORMATS.includes(normalizedFormat)
+  ) {
+    throw createUploadError(
+      "Unsupported document file format."
+    );
+  }
+
+  if (
+    documentType === "selfie" &&
+    normalizedFormat === "pdf"
+  ) {
+    throw createUploadError(
+      "A selfie must be uploaded as an image."
+    );
+  }
+
+  return ALLOWED_RAW_FORMATS.includes(normalizedFormat)
+    ? "raw"
+    : "image";
 };
 
 
@@ -101,17 +124,24 @@ const getDocumentResourceType = (documentType) => {
 const createVerificationUploadSession = async (
   userId,
   applicationId,
-  documentType
+  documentType,
+  fileFormat
 ) => {
   assertCloudinaryConfigured();
 
-  if (!userId || !applicationId || !documentType) {
+  if (!userId || !applicationId) {
     throw createUploadError(
-      "Professional, application and document type are required."
+      "Professional and application identifiers are required."
     );
   }
 
-  const resourceType = getDocumentResourceType(documentType);
+  const normalizedFormat = String(fileFormat || "")
+    .toLowerCase();
+
+  const resourceType = getDocumentResourceType(
+    documentType,
+    normalizedFormat
+  );
 
   const client = await pool.connect();
 
@@ -161,7 +191,7 @@ const createVerificationUploadSession = async (
     }
 
     // -------------------------------------------------
-    // VERIFY APPLICATION OWNERSHIP AND STATUS
+    // VERIFY APPLICATION OWNERSHIP
     // -------------------------------------------------
 
     const applicationResult = await client.query(
@@ -195,7 +225,7 @@ const createVerificationUploadSession = async (
     }
 
     // -------------------------------------------------
-    // GENERATE UNIQUE UPLOAD IDENTIFIERS
+    // GENERATE SECURE UPLOAD IDENTIFIERS
     // -------------------------------------------------
 
     const uploadToken = generateUploadToken();
@@ -217,7 +247,7 @@ const createVerificationUploadSession = async (
     );
 
     // -------------------------------------------------
-    // CLOUDINARY SIGNATURE PARAMETERS
+    // GENERATE CLOUDINARY SIGNATURE
     // -------------------------------------------------
 
     const signatureParameters = {
@@ -233,7 +263,7 @@ const createVerificationUploadSession = async (
     );
 
     // -------------------------------------------------
-    // SAVE UPLOAD SESSION
+    // STORE UPLOAD SESSION
     // -------------------------------------------------
 
     await client.query(
@@ -263,7 +293,7 @@ const createVerificationUploadSession = async (
     await client.query("COMMIT");
 
     // -------------------------------------------------
-    // RETURN CLIENT UPLOAD AUTHORIZATION
+    // RETURN UPLOAD AUTHORIZATION
     // -------------------------------------------------
 
     return {
@@ -284,8 +314,10 @@ const createVerificationUploadSession = async (
 
       restrictions: {
         max_file_size_bytes: MAX_DOCUMENT_SIZE_BYTES,
-        allowed_image_formats: ALLOWED_IMAGE_FORMATS,
-        allowed_raw_formats: ALLOWED_RAW_FORMATS
+        allowed_formats: [
+          ...ALLOWED_IMAGE_FORMATS,
+          ...ALLOWED_RAW_FORMATS
+        ]
       },
 
       expires_at: expiresAt.toISOString()
@@ -293,7 +325,6 @@ const createVerificationUploadSession = async (
 
   } catch (error) {
     await client.query("ROLLBACK");
-
     throw error;
 
   } finally {
