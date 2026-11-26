@@ -12,6 +12,7 @@ const professionalVerificationController = require(
 
 const {
   submitVerificationSchema,
+  createVerificationUploadSessionSchema,
   getVerificationApplicationSchema,
   getMyVerificationStatusSchema
 } = require("../validators/professionalVerificationSchemas");
@@ -33,6 +34,17 @@ router.post(
   "/applications",
   validate(submitVerificationSchema),
   professionalVerificationController.submitApplication
+);
+
+
+// =====================================================
+// CREATE DOCUMENT UPLOAD AUTHORIZATION
+// =====================================================
+
+router.post(
+  "/applications/:applicationId/upload-session",
+  validate(createVerificationUploadSessionSchema),
+  professionalVerificationController.createDocumentUploadSession
 );
 
 
