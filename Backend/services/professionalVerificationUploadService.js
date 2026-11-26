@@ -2,6 +2,7 @@
 const crypto = require("crypto");
 
 const { pool } = require("../config/database");
+
 const {
   ProfessionalVerificationError,
   getProfessionalVerificationProfile
@@ -57,7 +58,10 @@ const getDocumentResourceType = (format, documentType) => {
     );
   }
 
-  if (documentType === "selfie" && normalizedFormat === "pdf") {
+  if (
+    documentType === "selfie" &&
+    normalizedFormat === "pdf"
+  ) {
     throw new ProfessionalVerificationError(
       "A selfie must be uploaded as an image."
     );
@@ -73,6 +77,12 @@ const createVerificationUploadSession = async (
   applicationId,
   data
 ) => {
+  if (!data || typeof data !== "object") {
+    throw new ProfessionalVerificationError(
+      "Invalid upload-session details."
+    );
+  }
+
   const documentType = data.document_type;
   const fileFormat = normalizeFormat(data.file_format);
 
@@ -172,7 +182,7 @@ const createVerificationUploadSession = async (
           document_type,
           token_hash,
           cloudinary_public_id,
-          cloudinary_resource_type,
+          resource_type,
           file_format,
           expires_at
         )
@@ -191,7 +201,7 @@ const createVerificationUploadSession = async (
           application_id,
           document_type,
           file_format,
-          cloudinary_resource_type,
+          resource_type,
           expires_at
       `,
       [
