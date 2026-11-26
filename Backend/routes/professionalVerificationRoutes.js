@@ -1,72 +1,82 @@
 
 const express = require("express");
-const router = express.Router();
 
 const authenticate = require("../middleware/authenticate");
 const validate = require("../middleware/validate");
 const { apiLimiter } = require("../middleware/security");
 
-const professionalVerificationController = require("../controllers/professionalVerificationController");
+const controller = require("../controllers/professionalVerificationController");
 
 const {
   submitVerificationSchema,
+  updateVerificationDraftSchema,
   createVerificationUploadSessionSchema,
   uploadVerificationDocumentSchema,
   getVerificationApplicationSchema,
   deleteVerificationDocumentSchema,
-  getMyVerificationStatusSchema
+  getMyVerificationStatusSchema,
+  submitDraftVerificationApplicationSchema
 } = require("../validators/professionalVerificationSchemas");
+
+const router = express.Router();
 
 router.use(authenticate);
 router.use(apiLimiter);
 
-// Create a new draft verification application.
+// Create or resume a verification draft.
 router.post(
   "/applications",
   validate(submitVerificationSchema),
-  professionalVerificationController.submitApplication
+  controller.submitApplication
 );
 
-// Create an upload session for a draft application.
+// Update an existing verification draft.
+router.patch(
+  "/applications/:applicationId",
+  validate(updateVerificationDraftSchema),
+  controller.updateDraftApplication
+);
+
+// Create a secure Cloudinary upload session.
 router.post(
   "/applications/:applicationId/upload-session",
   validate(createVerificationUploadSessionSchema),
-  professionalVerificationController.createDocumentUploadSession
+  controller.createDocumentUploadSession
 );
 
-// Register an uploaded document after Cloudinary verification.
+// Register an uploaded verification document.
 router.post(
   "/applications/:applicationId/documents",
   validate(uploadVerificationDocumentSchema),
-  professionalVerificationController.registerUploadedDocument
+  controller.registerUploadedDocument
 );
 
-// Delete a document from a draft application only.
+// Delete a document from an existing draft.
 router.delete(
   "/applications/:applicationId/documents/:documentId",
   validate(deleteVerificationDocumentSchema),
-  professionalVerificationController.deleteUploadedDocument
+  controller.deleteUploadedDocument
 );
 
 // Submit a completed draft for admin review.
 router.post(
   "/applications/:applicationId/submit",
-  validate(getVerificationApplicationSchema),
-  professionalVerificationController.submitDraftApplication
+  validate(submitDraftVerificationApplicationSchema),
+  controller.submitDraftApplication
 );
 
-// Get the professional's verification status.
+// Retrieve the professional's verification status.
 router.get(
   "/status",
   validate(getMyVerificationStatusSchema),
-  professionalVerificationController.getMyStatus
+  controller.getMyStatus
 );
 
-// Get one application belonging to the authenticated professional.
+// Retrieve a specific verification application.
 router.get(
   "/applications/:applicationId",
   validate(getVerificationApplicationSchema),
-  professionalVerificationController.getMyApplication
+  controller.getMyApplication
 );
 
 module.exports = router;
