@@ -1,62 +1,32 @@
+
 const { pool } = require("../config/database");
-
-
-// =====================================================
-// PROFESSIONAL VERIFICATION ERRORS
-// =====================================================
 
 class ProfessionalVerificationError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
-
     this.name = "ProfessionalVerificationError";
     this.statusCode = statusCode;
   }
 }
 
-
-// =====================================================
-// TRANSACTION HELPER
-// =====================================================
-
 const withTransaction = async (callback) => {
   const client = await pool.connect();
 
-  let transactionStarted = false;
-
   try {
     await client.query("BEGIN");
-
-    transactionStarted = true;
 
     const result = await callback(client);
 
     await client.query("COMMIT");
 
-    transactionStarted = false;
-
     return result;
-
   } catch (error) {
-    if (transactionStarted) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        error.rollbackError = rollbackError;
-      }
-    }
-
+    await client.query("ROLLBACK");
     throw error;
-
   } finally {
     client.release();
   }
 };
-
-
-// =====================================================
-// GET PROFESSIONAL VERIFICATION PROFILE
-// =====================================================
 
 const getProfessionalVerificationProfile = async (
   client,
@@ -69,23 +39,20 @@ const getProfessionalVerificationProfile = async (
         pp.id AS professional_profile_id,
         pp.verification_status,
         pp.verified_at,
+        pp.profile_status,
+        u.id AS user_id,
         u.role,
         u.account_status
-
       FROM professional_profiles pp
-
       INNER JOIN users u
         ON u.id = pp.user_id
-
-      WHERE pp.user_id = $1
-
+      WHERE u.id = $1
       ${lock ? "FOR UPDATE OF pp" : ""}
-
     `,
     [userId]
   );
 
-  if (result.rowCount === 0) {
+  if (result.rows.length === 0) {
     throw new ProfessionalVerificationError(
       "Professional profile not found.",
       404
@@ -96,7 +63,7 @@ const getProfessionalVerificationProfile = async (
 
   if (profile.role !== "professional") {
     throw new ProfessionalVerificationError(
-      "Only professional accounts can submit verification applications.",
+      "Only professional accounts can access verification.",
       403
     );
   }
@@ -111,17 +78,10 @@ const getProfessionalVerificationProfile = async (
   return profile;
 };
 
-
-// =====================================================
-// SUBMIT VERIFICATION APPLICATION
-// =====================================================
-
-const submitVerificationApplication = async (
-  userId,
-  data
-) => {
+// Create a draft application.
+// This does NOT submit the application for admin review.
+const submitVerificationApplication = async (userId, data) => {
   return withTransaction(async (client) => {
-
     const profile = await getProfessionalVerificationProfile(
       client,
       userId,
@@ -130,52 +90,53 @@ const submitVerificationApplication = async (
 
     if (profile.verification_status === "approved") {
       throw new ProfessionalVerificationError(
-        "Your professional account has already been verified.",
+        "Your professional verification is already approved and cannot be resubmitted.",
         409
       );
     }
 
     if (profile.verification_status === "pending") {
       throw new ProfessionalVerificationError(
-        "You already have a pending verification application.",
+        "Your verification is already awaiting review.",
         409
       );
     }
 
-    const existingApplication = await client.query(
+    // Do not create another application while a draft already exists.
+    const existingDraft = await client.query(
       `
-        SELECT id, status
-
+        SELECT id
         FROM professional_verification_applications
-
         WHERE professional_profile_id = $1
-
-        AND status = 'pending'
-
+          AND status = 'draft'
         LIMIT 1
-
       `,
       [profile.professional_profile_id]
     );
 
-    if (existingApplication.rowCount > 0) {
+    if (existingDraft.rows.length > 0) {
       throw new ProfessionalVerificationError(
-        "You already have a pending verification application.",
+        "You already have a draft verification application. Continue editing that application.",
         409
       );
     }
 
-    if (data.date_of_birth) {
-      const birthDate = new Date(data.date_of_birth);
+    const existingPending = await client.query(
+      `
+        SELECT id
+        FROM professional_verification_applications
+        WHERE professional_profile_id = $1
+          AND status = 'pending'
+        LIMIT 1
+      `,
+      [profile.professional_profile_id]
+    );
 
-      if (
-        Number.isNaN(birthDate.getTime()) ||
-        birthDate.getTime() > Date.now()
-      ) {
-        throw new ProfessionalVerificationError(
-          "Date of birth must be a valid past date."
-        );
-      }
+    if (existingPending.rows.length > 0) {
+      throw new ProfessionalVerificationError(
+        "Your verification is already awaiting review.",
+        409
+      );
     }
 
     const applicationResult = await client.query(
@@ -183,68 +144,44 @@ const submitVerificationApplication = async (
         INSERT INTO professional_verification_applications (
           professional_profile_id,
           submitted_by,
+          status,
           legal_full_name,
           date_of_birth,
           country,
           state,
-          city,
-          status
+          city
         )
-
-        VALUES (
-          $1, $2, $3, $4, $5, $6, $7, 'pending'
-        )
-
+        VALUES ($1, $2, 'draft', $3, $4, $5, $6, $7)
         RETURNING
           id,
-          professional_profile_id,
+          status,
           legal_full_name,
           date_of_birth,
           country,
           state,
           city,
-          status,
           submitted_at,
           updated_at
-
       `,
       [
         profile.professional_profile_id,
         userId,
         data.legal_full_name,
         data.date_of_birth || null,
-        data.country,
+        data.country || "Nigeria",
         data.state || null,
         data.city || null
       ]
     );
 
-    await client.query(
-      `
-        UPDATE professional_profiles
-
-        SET
-          verification_status = 'pending',
-          verified_at = NULL,
-          updated_at = NOW()
-
-        WHERE id = $1
-
-      `,
-      [profile.professional_profile_id]
-    );
-
-    return applicationResult.rows[0];
+    return {
+      message: "Verification draft created successfully.",
+      application: applicationResult.rows[0]
+    };
   });
 };
 
-
-// =====================================================
-// GET MY VERIFICATION STATUS
-// =====================================================
-
 const getMyVerificationStatus = async (userId) => {
-
   const profile = await getProfessionalVerificationProfile(
     pool,
     userId
@@ -254,76 +191,35 @@ const getMyVerificationStatus = async (userId) => {
     `
       SELECT
         id,
+        status,
         legal_full_name,
         date_of_birth,
         country,
         state,
         city,
-        status,
+        reviewed_at,
         rejection_reason,
         submitted_at,
-        reviewed_at,
         updated_at
-
       FROM professional_verification_applications
-
       WHERE professional_profile_id = $1
-
       ORDER BY submitted_at DESC
-
       LIMIT 1
-
     `,
     [profile.professional_profile_id]
   );
 
-  const application = applicationResult.rows[0] || null;
-
-  let documents = [];
-
-  if (application) {
-    const documentsResult = await pool.query(
-      `
-        SELECT
-          id,
-          document_type,
-          file_format,
-          file_size_bytes,
-          uploaded_at
-
-        FROM professional_verification_documents
-
-        WHERE application_id = $1
-
-        ORDER BY uploaded_at DESC
-
-      `,
-      [application.id]
-    );
-
-    documents = documentsResult.rows;
-  }
-
   return {
     verification_status: profile.verification_status,
     verified_at: profile.verified_at,
-
-    application,
-
-    documents
+    latest_application: applicationResult.rows[0] || null
   };
 };
-
-
-// =====================================================
-// GET ONE VERIFICATION APPLICATION
-// =====================================================
 
 const getVerificationApplication = async (
   userId,
   applicationId
 ) => {
-
   const profile = await getProfessionalVerificationProfile(
     pool,
     userId
@@ -333,26 +229,20 @@ const getVerificationApplication = async (
     `
       SELECT
         id,
-        professional_profile_id,
+        status,
         legal_full_name,
         date_of_birth,
         country,
         state,
         city,
-        status,
+        reviewed_at,
         rejection_reason,
         submitted_at,
-        reviewed_at,
         updated_at
-
       FROM professional_verification_applications
-
       WHERE id = $1
-
-      AND professional_profile_id = $2
-
+        AND professional_profile_id = $2
       LIMIT 1
-
     `,
     [
       applicationId,
@@ -360,7 +250,7 @@ const getVerificationApplication = async (
     ]
   );
 
-  if (applicationResult.rowCount === 0) {
+  if (applicationResult.rows.length === 0) {
     throw new ProfessionalVerificationError(
       "Verification application not found.",
       404
@@ -377,13 +267,9 @@ const getVerificationApplication = async (
         file_format,
         file_size_bytes,
         uploaded_at
-
       FROM professional_verification_documents
-
       WHERE application_id = $1
-
-      ORDER BY uploaded_at DESC
-
+      ORDER BY uploaded_at ASC
     `,
     [applicationId]
   );
@@ -394,13 +280,10 @@ const getVerificationApplication = async (
   };
 };
 
-
-// =====================================================
-// EXPORTS
-// =====================================================
-
 module.exports = {
   ProfessionalVerificationError,
+  withTransaction,
+  getProfessionalVerificationProfile,
   submitVerificationApplication,
   getMyVerificationStatus,
   getVerificationApplication
