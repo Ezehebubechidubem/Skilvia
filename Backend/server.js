@@ -36,6 +36,10 @@ const accountRoutes = require("./routes/accountRoutes");
 const sessionRoutes = require("./routes/sessionRoutes");
 
 const professionalRoutes = require("./routes/professionalRoutes");
+
+const professionalVerificationRoutes =
+  require("./routes/professionalVerificationRoutes");
+
 const serviceRoutes = require("./routes/serviceRoutes");
 const publicServiceRoutes = require("./routes/publicServiceRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
@@ -190,6 +194,16 @@ app.use("/api/sessions", sessionRoutes);
 // =====================================================
 
 app.use("/api/professionals", professionalRoutes);
+
+
+// =====================================================
+// PROFESSIONAL VERIFICATION ROUTES
+// =====================================================
+
+app.use(
+  "/api/professional-verification",
+  professionalVerificationRoutes
+);
 
 
 // =====================================================
