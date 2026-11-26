@@ -78,8 +78,9 @@ const getProfessionalVerificationProfile = async (
   return profile;
 };
 
-// Create a draft application.
-// This does NOT submit the application for admin review.
+// Create a new draft application.
+// A new application is permitted only for first-time applicants
+// or professionals whose previous verification was rejected.
 const submitVerificationApplication = async (userId, data) => {
   return withTransaction(async (client) => {
     const profile = await getProfessionalVerificationProfile(
@@ -90,7 +91,7 @@ const submitVerificationApplication = async (userId, data) => {
 
     if (profile.verification_status === "approved") {
       throw new ProfessionalVerificationError(
-        "Your professional verification is already approved and cannot be resubmitted.",
+        "Your professional verification is permanently approved. You cannot submit another application.",
         409
       );
     }
@@ -102,7 +103,56 @@ const submitVerificationApplication = async (userId, data) => {
       );
     }
 
-    // Do not create another application while a draft already exists.
+    if (
+      !["not_submitted", "rejected"].includes(
+        profile.verification_status
+      )
+    ) {
+      throw new ProfessionalVerificationError(
+        "Your current verification status does not allow a new application.",
+        409
+      );
+    }
+
+    // Retrieve the most recently updated application.
+    const latestApplicationResult = await client.query(
+      `
+        SELECT
+          id,
+          status
+        FROM professional_verification_applications
+        WHERE professional_profile_id = $1
+        ORDER BY updated_at DESC, submitted_at DESC
+        LIMIT 1
+      `,
+      [profile.professional_profile_id]
+    );
+
+    const latestApplication = latestApplicationResult.rows[0];
+
+    if (profile.verification_status === "rejected") {
+      if (
+        !latestApplication ||
+        latestApplication.status !== "rejected"
+      ) {
+        throw new ProfessionalVerificationError(
+          "A new application can only be created after your previous application has been rejected.",
+          409
+        );
+      }
+    }
+
+    if (
+      profile.verification_status === "not_submitted" &&
+      latestApplication
+    ) {
+      throw new ProfessionalVerificationError(
+        "Your verification records require review before another application can be created.",
+        409
+      );
+    }
+
+    // Never create a second draft.
     const existingDraft = await client.query(
       `
         SELECT id
@@ -116,11 +166,12 @@ const submitVerificationApplication = async (userId, data) => {
 
     if (existingDraft.rows.length > 0) {
       throw new ProfessionalVerificationError(
-        "You already have a draft verification application. Continue editing that application.",
+        "You already have a draft verification application. Continue with that application.",
         409
       );
     }
 
+    // Never allow another application while one is pending.
     const existingPending = await client.query(
       `
         SELECT id
@@ -139,6 +190,8 @@ const submitVerificationApplication = async (userId, data) => {
       );
     }
 
+    // Insert a NEW application.
+    // Previous rejected applications and their documents are preserved.
     const applicationResult = await client.query(
       `
         INSERT INTO professional_verification_applications (
@@ -175,7 +228,9 @@ const submitVerificationApplication = async (userId, data) => {
     );
 
     return {
-      message: "Verification draft created successfully.",
+      message: latestApplication
+        ? "A new verification draft has been created following your previous rejection."
+        : "Verification draft created successfully.",
       application: applicationResult.rows[0]
     };
   });
@@ -203,7 +258,7 @@ const getMyVerificationStatus = async (userId) => {
         updated_at
       FROM professional_verification_applications
       WHERE professional_profile_id = $1
-      ORDER BY submitted_at DESC
+      ORDER BY updated_at DESC, submitted_at DESC
       LIMIT 1
     `,
     [profile.professional_profile_id]
@@ -257,8 +312,6 @@ const getVerificationApplication = async (
     );
   }
 
-  const application = applicationResult.rows[0];
-
   const documentsResult = await pool.query(
     `
       SELECT
@@ -275,7 +328,7 @@ const getVerificationApplication = async (
   );
 
   return {
-    application,
+    application: applicationResult.rows[0],
     documents: documentsResult.rows
   };
 };
