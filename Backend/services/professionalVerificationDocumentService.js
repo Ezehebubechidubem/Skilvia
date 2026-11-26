@@ -1,3 +1,4 @@
+
 const crypto = require("crypto");
 
 const { pool } = require("../config/database");
@@ -17,28 +18,9 @@ const {
   ALLOWED_RAW_FORMATS
 } = require("./professionalVerificationUploadService");
 
-
-// =====================================================
-// ERROR HANDLING
-// =====================================================
-
-const createDocumentError = (
-  message,
-  statusCode = 400,
-  code = "PROFESSIONAL_DOCUMENT_ERROR"
-) => {
-  const error = new ProfessionalVerificationError(message);
-
-  error.statusCode = statusCode;
-  error.code = code;
-
-  return error;
+const createDocumentError = (message, statusCode = 400) => {
+  return new ProfessionalVerificationError(message, statusCode);
 };
-
-
-// =====================================================
-// TOKEN HASHING
-// =====================================================
 
 const hashUploadToken = (token) => {
   return crypto
@@ -46,11 +28,6 @@ const hashUploadToken = (token) => {
     .update(token)
     .digest("hex");
 };
-
-
-// =====================================================
-// CLOUDINARY ASSET VERIFICATION
-// =====================================================
 
 const verifyCloudinaryAsset = async (session) => {
   let asset;
@@ -63,122 +40,75 @@ const verifyCloudinaryAsset = async (session) => {
         type: "authenticated"
       }
     );
-
   } catch (error) {
     if (
       error.http_code === 404 ||
       error.error?.http_code === 404
     ) {
       throw createDocumentError(
-        "The uploaded document could not be found.",
-        404,
-        "DOCUMENT_NOT_FOUND"
+        "The uploaded verification document could not be found.",
+        400
       );
     }
 
     throw createDocumentError(
-      "Unable to verify the uploaded document with Cloudinary.",
-      502,
-      "CLOUDINARY_VERIFICATION_FAILED"
+      "Unable to verify the uploaded document with secure storage.",
+      502
     );
   }
-
-  // -------------------------------------------------
-  // VERIFY ASSET IDENTIFIER
-  // -------------------------------------------------
-
-  if (asset.public_id !== session.cloudinary_public_id) {
-    throw createDocumentError(
-      "Uploaded document identifier does not match the authorized upload.",
-      400,
-      "DOCUMENT_IDENTIFIER_MISMATCH"
-    );
-  }
-
-  // -------------------------------------------------
-  // VERIFY RESOURCE TYPE
-  // -------------------------------------------------
 
   if (
-    asset.resource_type !==
-    session.cloudinary_resource_type
+    !asset ||
+    asset.public_id !== session.cloudinary_public_id ||
+    asset.resource_type !== session.cloudinary_resource_type ||
+    asset.type !== "authenticated"
   ) {
     throw createDocumentError(
-      "Uploaded document has an invalid resource type."
+      "The uploaded file does not match its authorized upload session.",
+      400
     );
   }
-
-  // -------------------------------------------------
-  // VERIFY DELIVERY TYPE
-  // -------------------------------------------------
-
-  if (asset.type !== "authenticated") {
-    throw createDocumentError(
-      "Verification documents must use authenticated Cloudinary delivery."
-    );
-  }
-
-  // -------------------------------------------------
-  // VERIFY FILE SIZE
-  // -------------------------------------------------
-
-  const fileSize = Number(asset.bytes);
 
   if (
-    !Number.isSafeInteger(fileSize) ||
-    fileSize <= 0 ||
-    fileSize > MAX_DOCUMENT_SIZE_BYTES
+    !Number.isInteger(asset.bytes) ||
+    asset.bytes <= 0 ||
+    asset.bytes > MAX_DOCUMENT_SIZE_BYTES
   ) {
     throw createDocumentError(
-      "Document size is invalid or exceeds the 10 MB limit."
+      "The document must be greater than zero bytes and must not exceed 10 MB.",
+      400
     );
   }
 
-  // -------------------------------------------------
-  // VERIFY ACTUAL FILE FORMAT
-  // -------------------------------------------------
+  const format = String(asset.format || "").toLowerCase();
 
-  const fileFormat = String(asset.format || "")
-    .toLowerCase();
+  const allowedFormats =
+    session.cloudinary_resource_type === "raw"
+      ? ALLOWED_RAW_FORMATS
+      : ALLOWED_IMAGE_FORMATS;
 
-  if (session.cloudinary_resource_type === "image") {
-    if (!ALLOWED_IMAGE_FORMATS.includes(fileFormat)) {
-      throw createDocumentError(
-        "The uploaded image format is not supported."
-      );
-    }
-  } else if (session.cloudinary_resource_type === "raw") {
-    if (!ALLOWED_RAW_FORMATS.includes(fileFormat)) {
-      throw createDocumentError(
-        "The uploaded document format is not supported."
-      );
-    }
-  } else {
+  if (!allowedFormats.includes(format)) {
     throw createDocumentError(
-      "Unsupported Cloudinary resource type."
+      "The uploaded document format is not allowed.",
+      400
     );
   }
 
   if (
     session.document_type === "selfie" &&
-    fileFormat === "pdf"
+    format === "pdf"
   ) {
     throw createDocumentError(
-      "A selfie must be uploaded as an image."
+      "A selfie must be uploaded as an image.",
+      400
     );
   }
 
   return {
-    file_format: fileFormat,
-    file_size_bytes: fileSize,
-    resource_type: asset.resource_type
+    format,
+    size: asset.bytes
   };
 };
-
-
-// =====================================================
-// REGISTER PROFESSIONAL VERIFICATION DOCUMENT
-// =====================================================
 
 const registerVerificationDocument = async (
   userId,
@@ -187,87 +117,170 @@ const registerVerificationDocument = async (
 ) => {
   assertCloudinaryConfigured();
 
-  if (!userId || !applicationId || !uploadToken) {
-    throw createDocumentError(
-      "Professional, application and upload token are required."
-    );
+  if (
+    typeof uploadToken !== "string" ||
+    uploadToken.length < 20 ||
+    uploadToken.length > 500
+  ) {
+    throw createDocumentError("Invalid upload token.");
   }
 
   const tokenHash = hashUploadToken(uploadToken);
+
+  // First read the upload session without holding a database lock
+  // during the external Cloudinary API request.
+  const initialResult = await pool.query(
+    `
+      SELECT
+        us.id AS upload_session_id,
+        us.application_id,
+        us.uploaded_by,
+        us.document_type,
+        us.cloudinary_public_id,
+        us.cloudinary_resource_type,
+        us.expires_at,
+        us.consumed_at,
+        pva.status AS application_status,
+        pp.verification_status,
+        u.account_status,
+        u.role
+      FROM professional_verification_upload_sessions us
+      INNER JOIN professional_verification_applications pva
+        ON pva.id = us.application_id
+      INNER JOIN professional_profiles pp
+        ON pp.id = pva.professional_profile_id
+      INNER JOIN users u
+        ON u.id = pp.user_id
+      WHERE us.token_hash = $1
+        AND us.application_id = $2
+        AND us.uploaded_by = $3
+      LIMIT 1
+    `,
+    [tokenHash, applicationId, userId]
+  );
+
+  if (initialResult.rows.length === 0) {
+    throw createDocumentError(
+      "Invalid verification upload session.",
+      404
+    );
+  }
+
+  const initialSession = initialResult.rows[0];
+
+  if (initialSession.role !== "professional") {
+    throw createDocumentError(
+      "Only professional accounts can register verification documents.",
+      403
+    );
+  }
+
+  if (initialSession.account_status !== "active") {
+    throw createDocumentError(
+      "Your account is not active.",
+      403
+    );
+  }
+
+  if (initialSession.verification_status === "approved") {
+    throw createDocumentError(
+      "Your verification is already approved. Your identification documents are locked.",
+      409
+    );
+  }
+
+  if (initialSession.verification_status === "pending") {
+    throw createDocumentError(
+      "Your verification is under review. Document registration is locked.",
+      409
+    );
+  }
+
+  if (initialSession.application_status !== "draft") {
+    throw createDocumentError(
+      "Documents can only be registered while your application is a draft.",
+      409
+    );
+  }
+
+  if (initialSession.consumed_at) {
+    throw createDocumentError(
+      "This upload session has already been used.",
+      409
+    );
+  }
+
+  if (new Date(initialSession.expires_at).getTime() <= Date.now()) {
+    throw createDocumentError(
+      "This upload session has expired. Create a new upload session.",
+      410
+    );
+  }
+
+  // Verify the actual asset with Cloudinary before opening the
+  // registration transaction.
+  const verifiedAsset = await verifyCloudinaryAsset(
+    initialSession
+  );
 
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    // -------------------------------------------------
-    // LOCK AND VALIDATE UPLOAD SESSION
-    // -------------------------------------------------
-
-    const sessionResult = await client.query(
+    // Lock the profile first. This serializes registration against
+    // verification submission and other profile verification changes.
+    const profileResult = await client.query(
       `
         SELECT
-          us.id,
-          us.application_id,
-          us.uploaded_by,
-          us.document_type,
-          us.cloudinary_public_id,
-          us.cloudinary_resource_type,
-          us.expires_at,
-          us.consumed_at,
+          pp.id AS professional_profile_id,
+          pp.verification_status,
+          u.role,
           u.account_status
-        FROM professional_verification_upload_sessions us
+        FROM professional_profiles pp
         INNER JOIN users u
-          ON u.id = us.uploaded_by
-        WHERE us.token_hash = $1
-          AND us.application_id = $2
-          AND us.uploaded_by = $3
-        FOR UPDATE OF us
+          ON u.id = pp.user_id
+        WHERE u.id = $1
+        FOR UPDATE OF pp
       `,
-      [
-        tokenHash,
-        applicationId,
-        userId
-      ]
+      [userId]
     );
 
-    if (sessionResult.rowCount === 0) {
+    if (profileResult.rows.length === 0) {
       throw createDocumentError(
-        "Invalid upload authorization.",
-        403,
-        "INVALID_UPLOAD_TOKEN"
+        "Professional profile not found.",
+        404
       );
     }
 
-    const session = sessionResult.rows[0];
+    const profile = profileResult.rows[0];
 
-    if (session.account_status !== "active") {
+    if (
+      profile.role !== "professional" ||
+      profile.account_status !== "active"
+    ) {
       throw createDocumentError(
-        "Your account is not active.",
+        "Your account is not authorized to register verification documents.",
         403
       );
     }
 
-    if (session.consumed_at) {
+    if (profile.verification_status === "approved") {
       throw createDocumentError(
-        "This upload authorization has already been used.",
-        409,
-        "UPLOAD_TOKEN_ALREADY_USED"
+        "Your verification is already approved. Your identification documents are locked.",
+        409
       );
     }
 
-    if (new Date(session.expires_at).getTime() <= Date.now()) {
+    if (profile.verification_status === "pending") {
       throw createDocumentError(
-        "Upload authorization has expired. Request a new one.",
-        410,
-        "UPLOAD_TOKEN_EXPIRED"
+        "Your verification is under review. Document registration is locked.",
+        409
       );
     }
 
-    // -------------------------------------------------
-    // VERIFY APPLICATION STATUS
-    // -------------------------------------------------
-
+    // Lock the application and confirm that it still belongs to
+    // this professional and remains a draft.
     const applicationResult = await client.query(
       `
         SELECT
@@ -275,34 +288,85 @@ const registerVerificationDocument = async (
           status
         FROM professional_verification_applications
         WHERE id = $1
+          AND professional_profile_id = $2
         FOR UPDATE
       `,
-      [applicationId]
+      [
+        applicationId,
+        profile.professional_profile_id
+      ]
     );
 
-    if (applicationResult.rowCount === 0) {
+    if (applicationResult.rows.length === 0) {
       throw createDocumentError(
-        "Verification application was not found.",
+        "Verification application not found.",
         404
       );
     }
 
-    if (applicationResult.rows[0].status !== "pending") {
+    if (applicationResult.rows[0].status !== "draft") {
       throw createDocumentError(
-        "This verification application no longer accepts documents.",
+        "This application is no longer accepting document uploads.",
         409
       );
     }
 
-    // -------------------------------------------------
-    // VERIFY CLOUDINARY ASSET
-    // -------------------------------------------------
+    // Lock and recheck the upload session to prevent token reuse.
+    const sessionResult = await client.query(
+      `
+        SELECT
+          id,
+          document_type,
+          cloudinary_public_id,
+          cloudinary_resource_type,
+          expires_at,
+          consumed_at
+        FROM professional_verification_upload_sessions
+        WHERE token_hash = $1
+          AND application_id = $2
+          AND uploaded_by = $3
+        FOR UPDATE
+      `,
+      [tokenHash, applicationId, userId]
+    );
 
-    const verifiedAsset = await verifyCloudinaryAsset(session);
+    if (sessionResult.rows.length === 0) {
+      throw createDocumentError(
+        "Invalid verification upload session.",
+        404
+      );
+    }
 
-    // -------------------------------------------------
-    // REGISTER VERIFIED DOCUMENT METADATA
-    // -------------------------------------------------
+    const session = sessionResult.rows[0];
+
+    if (session.consumed_at) {
+      throw createDocumentError(
+        "This upload session has already been used.",
+        409
+      );
+    }
+
+    if (new Date(session.expires_at).getTime() <= Date.now()) {
+      throw createDocumentError(
+        "This upload session has expired.",
+        410
+      );
+    }
+
+    // Ensure the session still refers to the exact asset verified
+    // before the transaction started.
+    if (
+      session.cloudinary_public_id !==
+        initialSession.cloudinary_public_id ||
+      session.cloudinary_resource_type !==
+        initialSession.cloudinary_resource_type ||
+      session.document_type !== initialSession.document_type
+    ) {
+      throw createDocumentError(
+        "The upload session changed during document verification.",
+        409
+      );
+    }
 
     const documentResult = await client.query(
       `
@@ -317,9 +381,7 @@ const registerVerificationDocument = async (
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING
           id,
-          application_id,
           document_type,
-          cloudinary_resource_type,
           file_format,
           file_size_bytes,
           uploaded_at
@@ -328,44 +390,34 @@ const registerVerificationDocument = async (
         applicationId,
         session.document_type,
         session.cloudinary_public_id,
-        verifiedAsset.resource_type,
-        verifiedAsset.file_format,
-        verifiedAsset.file_size_bytes
+        session.cloudinary_resource_type,
+        verifiedAsset.format,
+        verifiedAsset.size
       ]
     );
-
-    // -------------------------------------------------
-    // CONSUME UPLOAD AUTHORIZATION
-    // -------------------------------------------------
 
     await client.query(
       `
         UPDATE professional_verification_upload_sessions
-        SET consumed_at = CURRENT_TIMESTAMP
+        SET consumed_at = NOW()
         WHERE id = $1
-          AND consumed_at IS NULL
       `,
       [session.id]
     );
 
     await client.query("COMMIT");
 
-    return documentResult.rows[0];
-
+    return {
+      message: "Verification document registered successfully.",
+      document: documentResult.rows[0]
+    };
   } catch (error) {
     await client.query("ROLLBACK");
-
     throw error;
-
   } finally {
     client.release();
   }
 };
-
-
-// =====================================================
-// EXPORTS
-// =====================================================
 
 module.exports = {
   registerVerificationDocument
