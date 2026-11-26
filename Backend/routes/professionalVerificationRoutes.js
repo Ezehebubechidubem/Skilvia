@@ -1,14 +1,12 @@
+
 const express = require("express");
 const router = express.Router();
 
 const authenticate = require("../middleware/authenticate");
 const validate = require("../middleware/validate");
-
 const { apiLimiter } = require("../middleware/security");
 
-const professionalVerificationController = require(
-  "../controllers/professionalVerificationController"
-);
+const professionalVerificationController = require("../controllers/professionalVerificationController");
 
 const {
   submitVerificationSchema,
@@ -18,72 +16,49 @@ const {
   getMyVerificationStatusSchema
 } = require("../validators/professionalVerificationSchemas");
 
-
-// =====================================================
-// PROFESSIONAL VERIFICATION ROUTES
-// =====================================================
-
 router.use(authenticate);
 router.use(apiLimiter);
 
-
-// =====================================================
-// SUBMIT VERIFICATION APPLICATION
-// =====================================================
-
+// Create a new draft verification application.
 router.post(
   "/applications",
   validate(submitVerificationSchema),
   professionalVerificationController.submitApplication
 );
 
-
-// =====================================================
-// CREATE DOCUMENT UPLOAD AUTHORIZATION
-// =====================================================
-
+// Create an upload session for a document belonging to a draft.
 router.post(
   "/applications/:applicationId/upload-session",
   validate(createVerificationUploadSessionSchema),
   professionalVerificationController.createDocumentUploadSession
 );
 
-
-// =====================================================
-// REGISTER UPLOADED VERIFICATION DOCUMENT
-// =====================================================
-
+// Register a document after it has been uploaded to Cloudinary.
 router.post(
   "/applications/:applicationId/documents",
   validate(uploadVerificationDocumentSchema),
   professionalVerificationController.registerUploadedDocument
 );
 
+// Formally submit a draft application for admin review.
+router.post(
+  "/applications/:applicationId/submit",
+  validate(getVerificationApplicationSchema),
+  professionalVerificationController.submitDraftApplication
+);
 
-// =====================================================
-// GET MY VERIFICATION STATUS
-// =====================================================
-
+// Get the professional's current verification status.
 router.get(
   "/status",
   validate(getMyVerificationStatusSchema),
   professionalVerificationController.getMyStatus
 );
 
-
-// =====================================================
-// GET MY VERIFICATION APPLICATION
-// =====================================================
-
+// Get one application belonging to the authenticated professional.
 router.get(
   "/applications/:applicationId",
   validate(getVerificationApplicationSchema),
   professionalVerificationController.getMyApplication
 );
-
-
-// =====================================================
-// EXPORT
-// =====================================================
 
 module.exports = router;
