@@ -1,0 +1,215 @@
+
+const { pool } = require("../config/database");
+
+const {
+  ProfessionalVerificationError
+} = require("./professionalVerificationService");
+
+const REQUIRED_IDENTITY_DOCUMENT_TYPES = [
+  "national_id",
+  "drivers_license",
+  "international_passport",
+  "voters_card"
+];
+
+const submitDraftForReview = async (userId, applicationId) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Lock the professional profile first.
+    const profileResult = await client.query(
+      `
+        SELECT
+          pp.id AS professional_profile_id,
+          pp.verification_status,
+          u.role,
+          u.account_status
+        FROM professional_profiles pp
+        INNER JOIN users u
+          ON u.id = pp.user_id
+        WHERE u.id = $1
+        FOR UPDATE OF pp
+      `,
+      [userId]
+    );
+
+    if (profileResult.rows.length === 0) {
+      throw new ProfessionalVerificationError(
+        "Professional profile not found.",
+        404
+      );
+    }
+
+    const profile = profileResult.rows[0];
+
+    if (profile.role !== "professional") {
+      throw new ProfessionalVerificationError(
+        "Only professional accounts can submit verification.",
+        403
+      );
+    }
+
+    if (profile.account_status !== "active") {
+      throw new ProfessionalVerificationError(
+        "Your account is not active.",
+        403
+      );
+    }
+
+    if (profile.verification_status === "approved") {
+      throw new ProfessionalVerificationError(
+        "Your verification is already approved and cannot be resubmitted.",
+        409
+      );
+    }
+
+    if (profile.verification_status === "pending") {
+      throw new ProfessionalVerificationError(
+        "Your verification is already awaiting review.",
+        409
+      );
+    }
+
+    // Lock the application and verify ownership.
+    const applicationResult = await client.query(
+      `
+        SELECT
+          id,
+          status,
+          legal_full_name
+        FROM professional_verification_applications
+        WHERE id = $1
+          AND professional_profile_id = $2
+        FOR UPDATE
+      `,
+      [
+        applicationId,
+        profile.professional_profile_id
+      ]
+    );
+
+    if (applicationResult.rows.length === 0) {
+      throw new ProfessionalVerificationError(
+        "Verification application not found.",
+        404
+      );
+    }
+
+    const application = applicationResult.rows[0];
+
+    if (application.status !== "draft") {
+      throw new ProfessionalVerificationError(
+        "Only draft applications can be submitted for review.",
+        409
+      );
+    }
+
+    // Require at least one government-issued identity document.
+    const identityDocumentResult = await client.query(
+      `
+        SELECT
+          id,
+          document_type
+        FROM professional_verification_documents
+        WHERE application_id = $1
+          AND document_type = ANY($2::text[])
+        LIMIT 1
+      `,
+      [
+        applicationId,
+        REQUIRED_IDENTITY_DOCUMENT_TYPES
+      ]
+    );
+
+    if (identityDocumentResult.rows.length === 0) {
+      throw new ProfessionalVerificationError(
+        "Upload at least one valid government-issued identity document before submitting your application.",
+        400
+      );
+    }
+
+    // Ensure that no other application is already awaiting review.
+    const pendingApplicationResult = await client.query(
+      `
+        SELECT id
+        FROM professional_verification_applications
+        WHERE professional_profile_id = $1
+          AND status = 'pending'
+          AND id <> $2
+        LIMIT 1
+      `,
+      [
+        profile.professional_profile_id,
+        applicationId
+      ]
+    );
+
+    if (pendingApplicationResult.rows.length > 0) {
+      throw new ProfessionalVerificationError(
+        "Another verification application is already awaiting review.",
+        409
+      );
+    }
+
+    // Submit the application and lock its documents.
+    const updatedApplicationResult = await client.query(
+      `
+        UPDATE professional_verification_applications
+        SET
+          status = 'pending',
+          submitted_at = NOW(),
+          updated_at = NOW()
+        WHERE id = $1
+          AND professional_profile_id = $2
+          AND status = 'draft'
+        RETURNING
+          id,
+          status,
+          legal_full_name,
+          submitted_at,
+          updated_at
+      `,
+      [
+        applicationId,
+        profile.professional_profile_id
+      ]
+    );
+
+    if (updatedApplicationResult.rows.length === 0) {
+      throw new ProfessionalVerificationError(
+        "The application could not be submitted. Please try again.",
+        409
+      );
+    }
+
+    await client.query(
+      `
+        UPDATE professional_profiles
+        SET
+          verification_status = 'pending',
+          verified_at = NULL,
+          updated_at = NOW()
+        WHERE id = $1
+      `,
+      [profile.professional_profile_id]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      message: "Your verification application has been submitted for review.",
+      application: updatedApplicationResult.rows[0]
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+module.exports = {
+  submitDraftForReview
+};
