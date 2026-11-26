@@ -1,9 +1,5 @@
+
 const { z } = require("zod");
-
-
-// =====================================================
-// SHARED VALIDATION HELPERS
-// =====================================================
 
 const emptyObjectSchema = z.object({}).strict();
 
@@ -13,18 +9,12 @@ const requestSchema = (
   bodySchema = emptyObjectSchema,
   paramsSchema = emptyObjectSchema,
   querySchema = emptyObjectSchema
-) => {
-  return z.object({
+) =>
+  z.object({
     body: bodySchema,
     params: paramsSchema,
     query: querySchema
   }).strict();
-};
-
-
-// =====================================================
-// DOCUMENT VALIDATION
-// =====================================================
 
 const verificationDocumentTypeSchema = z.enum([
   "national_id",
@@ -44,127 +34,110 @@ const verificationFileFormatSchema = z.enum([
   "pdf"
 ]);
 
+const legalFullNameSchema = z.string()
+  .trim()
+  .min(3)
+  .max(150);
 
-// =====================================================
-// SUBMIT VERIFICATION APPLICATION
-// =====================================================
+const dateOfBirthSchema = z.string().date();
+
+const countrySchema = z.string()
+  .trim()
+  .min(2)
+  .max(100);
+
+const stateSchema = z.string()
+  .trim()
+  .min(2)
+  .max(100);
+
+const citySchema = z.string()
+  .trim()
+  .min(2)
+  .max(100);
 
 const submitVerificationSchema = requestSchema(
   z.object({
-    legal_full_name: z.string()
-      .trim()
-      .min(3)
-      .max(150),
-
-    date_of_birth: z.string()
-      .date()
-      .optional(),
-
-    country: z.string()
-      .trim()
-      .min(2)
-      .max(100)
-      .default("Nigeria"),
-
-    state: z.string()
-      .trim()
-      .min(2)
-      .max(100)
-      .optional(),
-
-    city: z.string()
-      .trim()
-      .min(2)
-      .max(100)
-      .optional()
+    legal_full_name: legalFullNameSchema,
+    date_of_birth: dateOfBirthSchema.optional(),
+    country: countrySchema.default("Nigeria"),
+    state: stateSchema.optional(),
+    city: citySchema.optional()
   }).strict()
 );
 
-
-// =====================================================
-// CREATE DOCUMENT UPLOAD AUTHORIZATION
-// =====================================================
+const updateVerificationDraftSchema = requestSchema(
+  z.object({
+    legal_full_name: legalFullNameSchema.optional(),
+    date_of_birth: dateOfBirthSchema.optional(),
+    country: countrySchema.optional(),
+    state: stateSchema.optional(),
+    city: citySchema.optional()
+  })
+    .strict()
+    .refine(
+      (data) => Object.keys(data).length > 0,
+      {
+        message: "Provide at least one field to update."
+      }
+    ),
+  z.object({
+    applicationId: uuidSchema
+  }).strict()
+);
 
 const createVerificationUploadSessionSchema = requestSchema(
   z.object({
     document_type: verificationDocumentTypeSchema,
-
     file_format: verificationFileFormatSchema
   }).strict(),
-
   z.object({
     applicationId: uuidSchema
   }).strict()
 );
-
-
-// =====================================================
-// VERIFY AND REGISTER UPLOADED DOCUMENT
-// =====================================================
 
 const uploadVerificationDocumentSchema = requestSchema(
   z.object({
-    upload_token: z.string()
-      .trim()
-      .min(20)
-      .max(500)
+    upload_token: z.string().trim().min(20).max(500)
   }).strict(),
-
   z.object({
     applicationId: uuidSchema
   }).strict()
 );
-
-
-// =====================================================
-// GET VERIFICATION APPLICATION
-// =====================================================
 
 const getVerificationApplicationSchema = requestSchema(
   emptyObjectSchema,
-
   z.object({
     applicationId: uuidSchema
   }).strict()
 );
 
-
-// =====================================================
-// DELETE VERIFICATION DOCUMENT
-// =====================================================
-
 const deleteVerificationDocumentSchema = requestSchema(
   emptyObjectSchema,
-
   z.object({
     applicationId: uuidSchema,
     documentId: uuidSchema
   }).strict()
 );
 
-
-// =====================================================
-// GET MY VERIFICATION STATUS
-// =====================================================
-
 const getMyVerificationStatusSchema = requestSchema();
 
-
-// =====================================================
-// EXPORTS
-// =====================================================
+const submitDraftVerificationApplicationSchema = requestSchema(
+  emptyObjectSchema,
+  z.object({
+    applicationId: uuidSchema
+  }).strict()
+);
 
 module.exports = {
   verificationDocumentTypeSchema,
   verificationFileFormatSchema,
-
   submitVerificationSchema,
-
+  updateVerificationDraftSchema,
   createVerificationUploadSessionSchema,
   uploadVerificationDocumentSchema,
-
   getVerificationApplicationSchema,
   deleteVerificationDocumentSchema,
-
-  getMyVerificationStatusSchema
+  getMyVerificationStatusSchema,
+  submitDraftVerificationApplicationSchema
 };
