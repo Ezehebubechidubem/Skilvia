@@ -13,6 +13,7 @@ const {
   createVerificationUploadSessionSchema,
   uploadVerificationDocumentSchema,
   getVerificationApplicationSchema,
+  deleteVerificationDocumentSchema,
   getMyVerificationStatusSchema
 } = require("../validators/professionalVerificationSchemas");
 
@@ -26,28 +27,35 @@ router.post(
   professionalVerificationController.submitApplication
 );
 
-// Create an upload session for a document belonging to a draft.
+// Create an upload session for a draft application.
 router.post(
   "/applications/:applicationId/upload-session",
   validate(createVerificationUploadSessionSchema),
   professionalVerificationController.createDocumentUploadSession
 );
 
-// Register a document after it has been uploaded to Cloudinary.
+// Register an uploaded document after Cloudinary verification.
 router.post(
   "/applications/:applicationId/documents",
   validate(uploadVerificationDocumentSchema),
   professionalVerificationController.registerUploadedDocument
 );
 
-// Formally submit a draft application for admin review.
+// Delete a document from a draft application only.
+router.delete(
+  "/applications/:applicationId/documents/:documentId",
+  validate(deleteVerificationDocumentSchema),
+  professionalVerificationController.deleteUploadedDocument
+);
+
+// Submit a completed draft for admin review.
 router.post(
   "/applications/:applicationId/submit",
   validate(getVerificationApplicationSchema),
   professionalVerificationController.submitDraftApplication
 );
 
-// Get the professional's current verification status.
+// Get the professional's verification status.
 router.get(
   "/status",
   validate(getMyVerificationStatusSchema),
