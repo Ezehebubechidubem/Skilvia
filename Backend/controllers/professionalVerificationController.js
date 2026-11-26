@@ -1,4 +1,3 @@
-
 const {
   ProfessionalVerificationError,
   submitVerificationApplication,
@@ -7,62 +6,66 @@ const {
 } = require("../services/professionalVerificationService");
 
 const {
+  updateProfessionalVerificationDraft
+} = require("../services/professionalVerificationDraftService");
+
+const {
   createVerificationUploadSession
 } = require("../services/professionalVerificationUploadService");
 
 const {
-  registerVerificationDocument
-} = require("../services/professionalVerificationDocumentService");
+  uploadVerificationDocument
+} = require("../services/professionalVerificationDocumentUploadService");
 
 const {
   deleteProfessionalVerificationDocument
-} = require("../services/professionalVerificationDocumentDeletionService");
+} = require("../services/professionalVerificationDocumentService");
 
 const {
   submitDraftForReview
 } = require("../services/professionalVerificationSubmissionService");
 
-const {
-  updateProfessionalVerificationDraft
-} = require("../services/professionalVerificationDraftService");
 
-const handleControllerError = (res, error, message) => {
+function handleControllerError(res, error, context) {
   if (error instanceof ProfessionalVerificationError) {
-    return res.status(error.statusCode).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message
     });
   }
 
-  console.error(message, error);
+  console.error(`${context}:`, error);
 
   return res.status(500).json({
     success: false,
-    message: "An unexpected error occurred."
+    message: "An unexpected error occurred. Please try again later."
   });
-};
+}
 
-const submitApplication = async (req, res) => {
+
+async function submitApplication(req, res) {
   try {
     const result = await submitVerificationApplication(
       req.auth.userId,
       req.validated.body
     );
 
-    return res.status(200).json({
+    return res.status(result.resumed ? 200 : 201).json({
       success: true,
-      ...result
+      message: result.message,
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification application error:"
+      "Submit professional verification application"
     );
   }
-};
+}
 
-const updateDraftApplication = async (req, res) => {
+
+async function updateDraftApplication(req, res) {
   try {
     const result = await updateProfessionalVerificationDraft(
       req.auth.userId,
@@ -72,18 +75,20 @@ const updateDraftApplication = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      ...result
+      message: "Verification application draft updated successfully.",
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification draft update error:"
+      "Update professional verification draft"
     );
   }
-};
+}
 
-const createDocumentUploadSession = async (req, res) => {
+
+async function createDocumentUploadSession(req, res) {
   try {
     const result = await createVerificationUploadSession(
       req.auth.userId,
@@ -93,39 +98,54 @@ const createDocumentUploadSession = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      ...result
+      message: "Document upload session created successfully.",
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification upload session error:"
+      "Create professional verification upload session"
     );
   }
-};
+}
 
-const registerUploadedDocument = async (req, res) => {
+
+async function registerUploadedDocument(req, res) {
   try {
-    const result = await registerVerificationDocument(
+    const { applicationId } = req.validated.params;
+    const { upload_token: uploadToken } = req.validated.body;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "A verification document file is required."
+      });
+    }
+
+    const result = await uploadVerificationDocument(
       req.auth.userId,
-      req.validated.params.applicationId,
-      req.validated.body
+      applicationId,
+      uploadToken,
+      req.file
     );
 
     return res.status(201).json({
       success: true,
-      ...result
+      message: "Verification document uploaded successfully.",
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification document registration error:"
+      "Upload professional verification document"
     );
   }
-};
+}
 
-const deleteUploadedDocument = async (req, res) => {
+
+async function deleteUploadedDocument(req, res) {
   try {
     const result = await deleteProfessionalVerificationDocument(
       req.auth.userId,
@@ -135,18 +155,20 @@ const deleteUploadedDocument = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      ...result
+      message: "Verification document deleted successfully.",
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification document deletion error:"
+      "Delete professional verification document"
     );
   }
-};
+}
 
-const submitDraftApplication = async (req, res) => {
+
+async function submitDraftApplication(req, res) {
   try {
     const result = await submitDraftForReview(
       req.auth.userId,
@@ -155,35 +177,40 @@ const submitDraftApplication = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      ...result
+      message: "Verification application submitted successfully.",
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification submission error:"
+      "Submit professional verification draft for review"
     );
   }
-};
+}
 
-const getMyStatus = async (req, res) => {
+
+async function getMyStatus(req, res) {
   try {
-    const result = await getMyVerificationStatus(req.auth.userId);
+    const result = await getMyVerificationStatus(
+      req.auth.userId
+    );
 
     return res.status(200).json({
       success: true,
-      ...result
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification status retrieval error:"
+      "Get professional verification status"
     );
   }
-};
+}
 
-const getMyApplication = async (req, res) => {
+
+async function getMyApplication(req, res) {
   try {
     const result = await getVerificationApplication(
       req.auth.userId,
@@ -192,16 +219,17 @@ const getMyApplication = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      ...result
+      data: result
     });
   } catch (error) {
     return handleControllerError(
       res,
       error,
-      "Professional verification application retrieval error:"
+      "Get professional verification application"
     );
   }
-};
+}
+
 
 module.exports = {
   submitApplication,
