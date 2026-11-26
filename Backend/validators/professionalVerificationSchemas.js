@@ -2,14 +2,12 @@ const { z } = require("zod");
 
 
 // =====================================================
-// SHARED SCHEMAS
+// SHARED VALIDATION HELPERS
 // =====================================================
 
 const emptyObjectSchema = z.object({}).strict();
 
-const uuidSchema = z.string().uuid(
-  "Invalid identifier."
-);
+const uuidSchema = z.string().uuid("Invalid identifier.");
 
 const requestSchema = (
   bodySchema = emptyObjectSchema,
@@ -25,7 +23,7 @@ const requestSchema = (
 
 
 // =====================================================
-// PROFESSIONAL VERIFICATION DOCUMENT TYPES
+// DOCUMENT VALIDATION
 // =====================================================
 
 const verificationDocumentTypeSchema = z.enum([
@@ -38,6 +36,14 @@ const verificationDocumentTypeSchema = z.enum([
   "selfie"
 ]);
 
+const verificationFileFormatSchema = z.enum([
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "pdf"
+]);
+
 
 // =====================================================
 // SUBMIT VERIFICATION APPLICATION
@@ -45,7 +51,6 @@ const verificationDocumentTypeSchema = z.enum([
 
 const submitVerificationSchema = requestSchema(
   z.object({
-
     legal_full_name: z.string()
       .trim()
       .min(3)
@@ -72,32 +77,41 @@ const submitVerificationSchema = requestSchema(
       .min(2)
       .max(100)
       .optional()
-
   }).strict()
 );
 
 
 // =====================================================
-// UPLOAD VERIFICATION DOCUMENT
+// CREATE DOCUMENT UPLOAD AUTHORIZATION
+// =====================================================
+
+const createVerificationUploadSessionSchema = requestSchema(
+  z.object({
+    document_type: verificationDocumentTypeSchema,
+
+    file_format: verificationFileFormatSchema
+  }).strict(),
+
+  z.object({
+    applicationId: uuidSchema
+  }).strict()
+);
+
+
+// =====================================================
+// VERIFY AND REGISTER UPLOADED DOCUMENT
 // =====================================================
 
 const uploadVerificationDocumentSchema = requestSchema(
   z.object({
-
-    document_type: verificationDocumentTypeSchema,
-
-    // Cloudinary upload identifiers are generated
-    // by the backend, never trusted from the client.
     upload_token: z.string()
+      .trim()
       .min(20)
       .max(500)
-
   }).strict(),
 
   z.object({
-
     applicationId: uuidSchema
-
   }).strict()
 );
 
@@ -110,26 +124,21 @@ const getVerificationApplicationSchema = requestSchema(
   emptyObjectSchema,
 
   z.object({
-
     applicationId: uuidSchema
-
   }).strict()
 );
 
 
 // =====================================================
-// REMOVE VERIFICATION DOCUMENT
+// DELETE VERIFICATION DOCUMENT
 // =====================================================
 
 const deleteVerificationDocumentSchema = requestSchema(
   emptyObjectSchema,
 
   z.object({
-
     applicationId: uuidSchema,
-
     documentId: uuidSchema
-
   }).strict()
 );
 
@@ -147,9 +156,15 @@ const getMyVerificationStatusSchema = requestSchema();
 
 module.exports = {
   verificationDocumentTypeSchema,
+  verificationFileFormatSchema,
+
   submitVerificationSchema,
+
+  createVerificationUploadSessionSchema,
   uploadVerificationDocumentSchema,
+
   getVerificationApplicationSchema,
   deleteVerificationDocumentSchema,
+
   getMyVerificationStatusSchema
 };
