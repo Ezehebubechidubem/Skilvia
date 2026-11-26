@@ -15,6 +15,10 @@ const {
 } = require("../services/professionalVerificationDocumentService");
 
 const {
+  deleteProfessionalVerificationDocument
+} = require("../services/professionalVerificationDocumentDeletionService");
+
+const {
   submitDraftForReview
 } = require("../services/professionalVerificationSubmissionService");
 
@@ -26,7 +30,10 @@ const handleControllerError = (res, error) => {
     });
   }
 
-  console.error("Professional verification controller error:", error);
+  console.error(
+    "Professional verification controller error:",
+    error
+  );
 
   return res.status(500).json({
     success: false,
@@ -51,7 +58,7 @@ const submitApplication = async (req, res) => {
   }
 };
 
-// Create a secure Cloudinary upload session for a draft application.
+// Create a secure upload session for a draft application.
 const createDocumentUploadSession = async (req, res) => {
   try {
     const result = await createVerificationUploadSession(
@@ -89,6 +96,24 @@ const registerUploadedDocument = async (req, res) => {
   }
 };
 
+// Delete an uploaded document from a draft application.
+const deleteUploadedDocument = async (req, res) => {
+  try {
+    const result = await deleteProfessionalVerificationDocument(
+      req.auth.userId,
+      req.validated.params.applicationId,
+      req.validated.params.documentId
+    );
+
+    return res.status(200).json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    return handleControllerError(res, error);
+  }
+};
+
 // Formally submit a draft application for admin review.
 const submitDraftApplication = async (req, res) => {
   try {
@@ -106,7 +131,7 @@ const submitDraftApplication = async (req, res) => {
   }
 };
 
-// Get the professional's current verification status.
+// Get the professional's verification status.
 const getMyStatus = async (req, res) => {
   try {
     const result = await getMyVerificationStatus(
@@ -122,7 +147,7 @@ const getMyStatus = async (req, res) => {
   }
 };
 
-// Get one verification application belonging to the professional.
+// Get one application belonging to the authenticated professional.
 const getMyApplication = async (req, res) => {
   try {
     const result = await getVerificationApplication(
@@ -143,6 +168,7 @@ module.exports = {
   submitApplication,
   createDocumentUploadSession,
   registerUploadedDocument,
+  deleteUploadedDocument,
   submitDraftApplication,
   getMyStatus,
   getMyApplication
