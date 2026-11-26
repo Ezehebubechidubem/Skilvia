@@ -9,6 +9,10 @@ const {
   createVerificationUploadSession
 } = require("../services/professionalVerificationUploadService");
 
+const {
+  registerVerificationDocument
+} = require("../services/professionalVerificationDocumentService");
+
 
 // =====================================================
 // ERROR HANDLING
@@ -138,6 +142,42 @@ const createDocumentUploadSession = async (
 
 
 // =====================================================
+// REGISTER UPLOADED VERIFICATION DOCUMENT
+// =====================================================
+
+const registerUploadedDocument = async (
+  req,
+  res,
+  next
+) => {
+  try {
+    const userId = req.auth.userId;
+
+    const { applicationId } = req.validated.params;
+
+    const { upload_token } = req.validated.body;
+
+    const document = await registerVerificationDocument(
+      userId,
+      applicationId,
+      upload_token
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Verification document uploaded and registered successfully.",
+      data: {
+        document
+      }
+    });
+
+  } catch (error) {
+    return handleControllerError(error, next);
+  }
+};
+
+
+// =====================================================
 // EXPORTS
 // =====================================================
 
@@ -145,5 +185,6 @@ module.exports = {
   submitApplication,
   getMyStatus,
   getMyApplication,
-  createDocumentUploadSession
+  createDocumentUploadSession,
+  registerUploadedDocument
 };
