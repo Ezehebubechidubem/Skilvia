@@ -20,6 +20,26 @@ const {
   normalizeFormat
 } = require("./professionalVerificationUploadService");
 
+const logVerificationEvent = (event, details = {}) => {
+  console.info(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationDocumentUploadService",
+    ...details
+  }));
+};
+
+const logVerificationError = (event, error, details = {}) => {
+  console.error(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationDocumentUploadService",
+    error_name: error?.name || "Error",
+    error_code: error?.code || null,
+    ...details
+  }));
+};
+
 const detectFileFormat = (buffer) => {
   if (!Buffer.isBuffer(buffer) || buffer.length < 12) {
     return null;
@@ -62,6 +82,29 @@ const detectFileFormat = (buffer) => {
   return null;
 };
 
+const validateDeclaredMimeType = (format, mimeType) => {
+  if (!mimeType) {
+    return;
+  }
+
+  const allowedMimeTypes = {
+    jpg: ["image/jpeg"],
+    jpeg: ["image/jpeg"],
+    png: ["image/png"],
+    webp: ["image/webp"],
+    pdf: ["application/pdf"]
+  };
+
+  const allowed = allowedMimeTypes[format];
+
+  if (!allowed || !allowed.includes(mimeType.toLowerCase())) {
+    throw new ProfessionalVerificationError(
+      "The uploaded document content does not match its declared media type.",
+      400
+    );
+  }
+};
+
 const uploadToCloudinary = (buffer, session) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -97,7 +140,10 @@ const uploadToCloudinary = (buffer, session) => {
   });
 };
 
-const deleteCloudinaryAsset = async (publicId, resourceType) => {
+const deleteCloudinaryAsset = async (
+  publicId,
+  resourceType
+) => {
   return cloudinary.uploader.destroy(publicId, {
     resource_type: resourceType,
     type: "authenticated",
@@ -149,7 +195,7 @@ const getValidUploadSession = async (
     `,
     [
       applicationId,
-      profile.id,
+      profile.professional_profile_id,
       userId
     ]
   );
@@ -227,13 +273,37 @@ const getValidUploadSession = async (
   return session;
 };
 
+/*
+ * If the database connection fails during COMMIT, the outcome can
+ * be uncertain. Check whether the document row actually exists
+ * before deleting its Cloudinary asset.
+ */
+const isDocumentRegistered = async (publicId) => {
+  const result = await pool.query(
+    `
+      SELECT id
+      FROM professional_verification_documents
+      WHERE cloudinary_public_id = $1
+      LIMIT 1
+    `,
+    [publicId]
+  );
+
+  return result.rowCount > 0;
+};
+
 const uploadVerificationDocument = async (
   userId,
   applicationId,
   uploadToken,
   file
 ) => {
-  assertCloudinaryConfigured();
+  if (!userId || !applicationId) {
+    throw new ProfessionalVerificationError(
+      "User and application identifiers are required.",
+      400
+    );
+  }
 
   if (
     typeof uploadToken !== "string" ||
@@ -271,19 +341,35 @@ const uploadVerificationDocument = async (
     );
   }
 
+  validateDeclaredMimeType(actualFormat, file.mimetype);
+
   const tokenHash = crypto
     .createHash("sha256")
     .update(uploadToken)
     .digest("hex");
 
+  assertCloudinaryConfigured();
+
   const client = await pool.connect();
 
-  let session;
+  let transactionStarted = false;
+  let commitAttempted = false;
+  let uploadedAsset = null;
+  let session = null;
 
   try {
-    // First check: validate ownership and session before uploading.
     await client.query("BEGIN");
+    transactionStarted = true;
 
+    /*
+     * IMPORTANT:
+     * Keep the transaction and session row lock until the
+     * Cloudinary upload and database registration are complete.
+     *
+     * A simultaneous request using the same token must wait.
+     * Once this transaction commits, that request will see
+     * consumed_at and will be rejected.
+     */
     session = await getValidUploadSession(
       client,
       userId,
@@ -291,63 +377,41 @@ const uploadVerificationDocument = async (
       tokenHash
     );
 
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+    const expectedFormat = normalizeFormat(session.file_format);
 
-  const expectedFormat = normalizeFormat(session.file_format);
+    if (actualFormat !== expectedFormat) {
+      throw new ProfessionalVerificationError(
+        "The uploaded file does not match the format selected when the upload session was created.",
+        400
+      );
+    }
 
-  if (actualFormat !== expectedFormat) {
-    throw new ProfessionalVerificationError(
-      "The uploaded file does not match the format selected when the upload session was created.",
-      400
-    );
-  }
+    const expectedResourceType = actualFormat === "pdf"
+      ? "raw"
+      : "image";
 
-  const expectedResourceType = actualFormat === "pdf"
-    ? "raw"
-    : "image";
+    if (session.resource_type !== expectedResourceType) {
+      throw new ProfessionalVerificationError(
+        "The uploaded document resource type is invalid.",
+        400
+      );
+    }
 
-  if (session.resource_type !== expectedResourceType) {
-    throw new ProfessionalVerificationError(
-      "The uploaded document resource type is invalid.",
-      400
-    );
-  }
-
-  if (
-    file.mimetype &&
-    (
-      (actualFormat === "pdf" && file.mimetype !== "application/pdf") ||
-      (actualFormat !== "pdf" && !file.mimetype.startsWith("image/"))
-    )
-  ) {
-    throw new ProfessionalVerificationError(
-      "The uploaded document content does not match its declared media type.",
-      400
-    );
-  }
-
-  let uploadedAsset = null;
-
-  try {
     uploadedAsset = await uploadToCloudinary(
       file.buffer,
       session
     );
 
-    const cloudinaryFormat = normalizeFormat(uploadedAsset.format);
+    const cloudinaryFormat = normalizeFormat(
+      uploadedAsset.format
+    );
 
     if (
       uploadedAsset.public_id !== session.cloudinary_public_id ||
       uploadedAsset.resource_type !== session.resource_type ||
       cloudinaryFormat !== expectedFormat ||
       !Number.isInteger(uploadedAsset.bytes) ||
-      uploadedAsset.bytes <= 0 ||
+      uploadedAsset.bytes !== file.buffer.length ||
       uploadedAsset.bytes > MAX_DOCUMENT_SIZE_BYTES
     ) {
       throw new ProfessionalVerificationError(
@@ -356,107 +420,180 @@ const uploadVerificationDocument = async (
       );
     }
 
-    const finalClient = await pool.connect();
+    const consumedResult = await client.query(
+      `
+        UPDATE professional_verification_upload_sessions
+        SET consumed_at = NOW()
+        WHERE id = $1
+          AND consumed_at IS NULL
+          AND expires_at > NOW()
+        RETURNING id
+      `,
+      [session.id]
+    );
 
-    try {
-      await finalClient.query("BEGIN");
-
-      // Recheck everything because the application or session
-      // may have changed while Cloudinary was receiving the file.
-      const currentSession = await getValidUploadSession(
-        finalClient,
-        userId,
-        applicationId,
-        tokenHash
+    if (consumedResult.rowCount !== 1) {
+      throw new ProfessionalVerificationError(
+        "Upload session has expired or has already been used.",
+        409
       );
-
-      if (
-        currentSession.id !== session.id ||
-        currentSession.cloudinary_public_id !== uploadedAsset.public_id
-      ) {
-        throw new ProfessionalVerificationError(
-          "The upload session changed during document processing.",
-          409
-        );
-      }
-
-      const consumedResult = await finalClient.query(
-        `
-          UPDATE professional_verification_upload_sessions
-          SET consumed_at = NOW()
-          WHERE id = $1
-            AND consumed_at IS NULL
-            AND expires_at > NOW()
-          RETURNING id
-        `,
-        [currentSession.id]
-      );
-
-      if (consumedResult.rowCount !== 1) {
-        throw new ProfessionalVerificationError(
-          "Upload session has expired or has already been used.",
-          409
-        );
-      }
-
-      const documentResult = await finalClient.query(
-        `
-          INSERT INTO professional_verification_documents (
-            application_id,
-            document_type,
-            cloudinary_public_id,
-            cloudinary_resource_type,
-            file_format,
-            file_size_bytes
-          )
-          VALUES ($1, $2, $3, $4, $5, $6)
-          RETURNING
-            id,
-            document_type,
-            file_format,
-            file_size_bytes,
-            uploaded_at
-        `,
-        [
-          applicationId,
-          currentSession.document_type,
-          uploadedAsset.public_id,
-          uploadedAsset.resource_type,
-          cloudinaryFormat,
-          uploadedAsset.bytes
-        ]
-      );
-
-      await finalClient.query("COMMIT");
-
-      return {
-        message: "Verification document uploaded successfully.",
-        document: documentResult.rows[0]
-      };
-    } catch (error) {
-      await finalClient.query("ROLLBACK").catch(() => {});
-      throw error;
-    } finally {
-      finalClient.release();
     }
+
+    const documentResult = await client.query(
+      `
+        INSERT INTO professional_verification_documents (
+          application_id,
+          document_type,
+          cloudinary_public_id,
+          cloudinary_resource_type,
+          file_format,
+          file_size_bytes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+          id,
+          document_type,
+          file_format,
+          file_size_bytes,
+          uploaded_at
+      `,
+      [
+        applicationId,
+        session.document_type,
+        uploadedAsset.public_id,
+        uploadedAsset.resource_type,
+        cloudinaryFormat,
+        uploadedAsset.bytes
+      ]
+    );
+
+    commitAttempted = true;
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    logVerificationEvent(
+      "professional_verification_document_uploaded",
+      {
+        user_id: userId,
+        application_id: applicationId,
+        document_id: documentResult.rows[0].id,
+        upload_session_id: session.id,
+        document_type: session.document_type,
+        resource_type: uploadedAsset.resource_type,
+        file_format: cloudinaryFormat,
+        file_size_bytes: uploadedAsset.bytes
+      }
+    );
+
+    return {
+      message: "Verification document uploaded successfully.",
+      document: documentResult.rows[0]
+    };
   } catch (error) {
-    // If Cloudinary accepted the file but the database operation
-    // failed, remove the orphaned asset.
-    if (uploadedAsset && uploadedAsset.public_id) {
+    if (transactionStarted) {
       try {
-        await deleteCloudinaryAsset(
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        logVerificationError(
+          "professional_verification_document_rollback_failed",
+          rollbackError,
+          {
+            user_id: userId,
+            application_id: applicationId
+          }
+        );
+      }
+
+      transactionStarted = false;
+    }
+
+    /*
+     * If COMMIT was attempted but its response was lost,
+     * determine whether PostgreSQL actually registered the
+     * document before considering Cloudinary cleanup.
+     */
+    let shouldCleanupAsset = Boolean(
+      uploadedAsset?.public_id
+    );
+
+    if (uploadedAsset?.public_id && commitAttempted) {
+      try {
+        const registered = await isDocumentRegistered(
+          uploadedAsset.public_id
+        );
+
+        if (registered) {
+          shouldCleanupAsset = false;
+
+          logVerificationEvent(
+            "professional_verification_document_commit_confirmed",
+            {
+              user_id: userId,
+              application_id: applicationId
+            }
+          );
+        }
+      } catch (verificationError) {
+        /*
+         * Do not delete an asset when its database registration
+         * cannot be determined. This avoids deleting a document
+         * that may have committed successfully.
+         */
+        shouldCleanupAsset = false;
+
+        logVerificationError(
+          "professional_verification_document_commit_status_unknown",
+          verificationError,
+          {
+            user_id: userId,
+            application_id: applicationId
+          }
+        );
+      }
+    }
+
+    if (shouldCleanupAsset) {
+      try {
+        const cleanupResult = await deleteCloudinaryAsset(
           uploadedAsset.public_id,
           uploadedAsset.resource_type
         );
+
+        logVerificationEvent(
+          "professional_verification_document_cleanup_completed",
+          {
+            user_id: userId,
+            application_id: applicationId,
+            cleanup_result: cleanupResult?.result || "completed"
+          }
+        );
       } catch (cleanupError) {
-        console.error(
-          "Failed to clean up an unregistered verification document:",
-          cleanupError.message
+        logVerificationError(
+          "professional_verification_document_cleanup_failed",
+          cleanupError,
+          {
+            user_id: userId,
+            application_id: applicationId
+          }
         );
       }
     }
 
+    logVerificationError(
+      "professional_verification_document_upload_failed",
+      error,
+      {
+        user_id: userId,
+        application_id: applicationId,
+        upload_session_id: session?.id || null,
+        status_code: error.statusCode || 500
+      }
+    );
+
     throw error;
+  } finally {
+    client.release();
   }
 };
 
