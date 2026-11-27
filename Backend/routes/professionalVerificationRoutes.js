@@ -1,6 +1,8 @@
 const express = require("express");
 
-const { authenticate } = require("../middleware/authenticate");
+// Authentication middleware is exported directly.
+const authenticate = require("../middleware/authenticate");
+
 const validate = require("../middleware/validate");
 const { apiLimiter } = require("../middleware/security");
 
@@ -30,39 +32,50 @@ const {
   getMyApplication
 } = require("../controllers/professionalVerificationController");
 
-
 const router = express.Router();
+
+// =====================================
+// GLOBAL ROUTE MIDDLEWARE
+// =====================================
 
 router.use(authenticate);
 router.use(apiLimiter);
 
+// =====================================
+// CREATE OR RESUME APPLICATION
+// =====================================
 
-// Create or resume a verification application draft.
 router.post(
   "/applications",
   validate(submitVerificationSchema),
   submitApplication
 );
 
+// =====================================
+// UPDATE APPLICATION DRAFT
+// =====================================
 
-// Update an existing verification application draft.
 router.patch(
   "/applications/:applicationId",
   validate(updateVerificationDraftSchema),
   updateDraftApplication
 );
 
+// =====================================
+// CREATE DOCUMENT UPLOAD SESSION
+// =====================================
 
-// Create a document upload session.
 router.post(
   "/applications/:applicationId/upload-session",
   validate(createVerificationUploadSessionSchema),
   createDocumentUploadSession
 );
 
+// =====================================
+// UPLOAD VERIFICATION DOCUMENT
+// =====================================
 
-// Upload a verification document.
-// Multer processes multipart/form-data before request validation.
+// Multer processes multipart/form-data before validation.
 router.post(
   "/applications/:applicationId/documents",
   receiveVerificationDocument,
@@ -70,37 +83,48 @@ router.post(
   registerUploadedDocument
 );
 
+// =====================================
+// DELETE VERIFICATION DOCUMENT
+// =====================================
 
-// Delete a document from an editable application.
 router.delete(
   "/applications/:applicationId/documents/:documentId",
   validate(deleteVerificationDocumentSchema),
   deleteUploadedDocument
 );
 
+// =====================================
+// SUBMIT APPLICATION FOR ADMIN REVIEW
+// =====================================
 
-// Submit a completed draft for admin review.
 router.post(
   "/applications/:applicationId/submit",
   validate(submitDraftVerificationApplicationSchema),
   submitDraftApplication
 );
 
+// =====================================
+// GET PROFESSIONAL VERIFICATION STATUS
+// =====================================
 
-// Get the authenticated professional's verification status.
 router.get(
   "/status",
   validate(getMyVerificationStatusSchema),
   getMyStatus
 );
 
+// =====================================
+// GET VERIFICATION APPLICATION
+// =====================================
 
-// Get one verification application.
 router.get(
   "/applications/:applicationId",
   validate(getVerificationApplicationSchema),
   getMyApplication
 );
 
+// =====================================
+// EXPORT ROUTER
+// =====================================
 
 module.exports = router;
