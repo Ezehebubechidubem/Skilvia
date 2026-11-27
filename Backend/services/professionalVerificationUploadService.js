@@ -32,6 +32,26 @@ const ALLOWED_DOCUMENT_TYPES = new Set([
   "selfie"
 ]);
 
+const logVerificationEvent = (event, details = {}) => {
+  console.info(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationUploadService",
+    ...details
+  }));
+};
+
+const logVerificationError = (event, error, details = {}) => {
+  console.error(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationUploadService",
+    error_name: error?.name || "Error",
+    error_code: error?.code || null,
+    ...details
+  }));
+};
+
 const normalizeFormat = (format) => {
   if (typeof format !== "string") {
     return null;
@@ -77,9 +97,21 @@ const createVerificationUploadSession = async (
   applicationId,
   data
 ) => {
-  if (!data || typeof data !== "object") {
+  if (!userId || !applicationId) {
     throw new ProfessionalVerificationError(
-      "Invalid upload-session details."
+      "User and application identifiers are required.",
+      400
+    );
+  }
+
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    throw new ProfessionalVerificationError(
+      "Invalid upload-session details.",
+      400
     );
   }
 
@@ -88,7 +120,8 @@ const createVerificationUploadSession = async (
 
   if (!ALLOWED_DOCUMENT_TYPES.has(documentType)) {
     throw new ProfessionalVerificationError(
-      "Unsupported verification document type."
+      "Unsupported verification document type.",
+      400
     );
   }
 
@@ -112,8 +145,11 @@ const createVerificationUploadSession = async (
 
   const client = await pool.connect();
 
+  let transactionStarted = false;
+
   try {
     await client.query("BEGIN");
+    transactionStarted = true;
 
     const profile = await getProfessionalVerificationProfile(
       client,
@@ -153,7 +189,7 @@ const createVerificationUploadSession = async (
       `,
       [
         applicationId,
-        profile.id,
+        profile.professional_profile_id,
         userId
       ]
     );
@@ -217,6 +253,20 @@ const createVerificationUploadSession = async (
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
+
+    logVerificationEvent(
+      "professional_verification_upload_session_created",
+      {
+        user_id: userId,
+        application_id: applicationId,
+        session_id: sessionResult.rows[0].id,
+        document_type: documentType,
+        resource_type: resourceType,
+        file_format: fileFormat,
+        expires_at: sessionResult.rows[0].expires_at
+      }
+    );
 
     return {
       upload_token: uploadToken,
@@ -230,7 +280,31 @@ const createVerificationUploadSession = async (
       }
     };
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        logVerificationError(
+          "professional_verification_upload_session_rollback_failed",
+          rollbackError,
+          {
+            user_id: userId,
+            application_id: applicationId
+          }
+        );
+      }
+    }
+
+    logVerificationError(
+      "professional_verification_upload_session_creation_failed",
+      error,
+      {
+        user_id: userId,
+        application_id: applicationId,
+        status_code: error.statusCode || 500
+      }
+    );
+
     throw error;
   } finally {
     client.release();
