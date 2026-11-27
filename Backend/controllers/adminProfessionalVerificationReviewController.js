@@ -1,4 +1,3 @@
-
 const {
   ProfessionalVerificationError
 } = require("../services/professionalVerificationService");
@@ -9,20 +8,7 @@ const {
 
 const reviewApplication = async (req, res, next) => {
   try {
-    if (!req.auth || !req.auth.userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Administrator authentication is required."
-      });
-    }
-
-    if (!req.validated) {
-      return res.status(400).json({
-        success: false,
-        message: "Request validation is required."
-      });
-    }
-
+    const adminId = req.auth?.userId;
     const { applicationId } = req.validated.params;
 
     const {
@@ -32,25 +18,41 @@ const reviewApplication = async (req, res, next) => {
     } = req.validated.body;
 
     const result = await reviewProfessionalVerificationApplication({
-      adminId: req.auth.userId,
+      adminId,
       applicationId,
       decision,
-      rejectionReason: rejection_reason,
-      adminNotes: admin_notes
+      rejectionReason: rejection_reason ?? null,
+      adminNotes: admin_notes ?? null,
+
+      // Metadata for the existing permanent admin audit log.
+      ipAddress: req.ip || null,
+      userAgent: req.get("user-agent") || null,
+      requestId: req.id || null
     });
 
     return res.status(200).json({
       success: true,
-      message: result.message,
+      message: decision === "approved"
+        ? "Professional verification approved successfully."
+        : "Professional verification rejected successfully.",
       data: result
     });
   } catch (error) {
     if (error instanceof ProfessionalVerificationError) {
-      return res.status(error.statusCode).json({
+      return res.status(error.statusCode || 400).json({
         success: false,
         message: error.message
       });
     }
+
+    console.error(JSON.stringify({
+      event: "admin_professional_verification_review_controller_failed",
+      timestamp: new Date().toISOString(),
+      admin_id: req.auth?.userId || null,
+      application_id: req.validated?.params?.applicationId || null,
+      error_name: error?.name || "Error",
+      error_code: error?.code || null
+    }));
 
     return next(error);
   }
