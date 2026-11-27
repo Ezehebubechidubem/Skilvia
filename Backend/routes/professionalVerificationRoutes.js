@@ -1,82 +1,122 @@
-
 const express = require("express");
 
-const authenticate = require("../middleware/authenticate");
-const validate = require("../middleware/validate");
+const { authenticate } = require("../middleware/authenticate");
+const { validate } = require("../middleware/validate");
 const { apiLimiter } = require("../middleware/security");
 
-const controller = require("../controllers/professionalVerificationController");
+const {
+  receiveVerificationDocument
+} = require("../middleware/professionalVerificationUpload");
 
 const {
-  submitVerificationSchema,
+  submitApplicationSchema,
   updateVerificationDraftSchema,
-  createVerificationUploadSessionSchema,
-  uploadVerificationDocumentSchema,
-  getVerificationApplicationSchema,
-  deleteVerificationDocumentSchema,
-  getMyVerificationStatusSchema,
+  createUploadSessionSchema,
+  registerDocumentSchema,
+  applicationIdParamSchema,
+  documentIdParamSchema,
   submitDraftVerificationApplicationSchema
 } = require("../validators/professionalVerificationSchemas");
+
+const {
+  submitApplication,
+  updateDraftApplication,
+  createDocumentUploadSession,
+  registerUploadedDocument,
+  deleteUploadedDocument,
+  submitDraftApplication,
+  getMyStatus,
+  getMyApplication
+} = require("../controllers/professionalVerificationController");
+
 
 const router = express.Router();
 
 router.use(authenticate);
 router.use(apiLimiter);
 
-// Create or resume a verification draft.
+
+// Create or resume a verification application draft.
 router.post(
   "/applications",
-  validate(submitVerificationSchema),
-  controller.submitApplication
+  validate({
+    body: submitApplicationSchema
+  }),
+  submitApplication
 );
 
-// Update an existing verification draft.
+
+// Update an existing verification application draft.
 router.patch(
   "/applications/:applicationId",
-  validate(updateVerificationDraftSchema),
-  controller.updateDraftApplication
+  validate({
+    params: applicationIdParamSchema,
+    body: updateVerificationDraftSchema
+  }),
+  updateDraftApplication
 );
 
-// Create a secure Cloudinary upload session.
+
+// Create a short-lived document upload session.
 router.post(
   "/applications/:applicationId/upload-session",
-  validate(createVerificationUploadSessionSchema),
-  controller.createDocumentUploadSession
+  validate({
+    params: applicationIdParamSchema,
+    body: createUploadSessionSchema
+  }),
+  createDocumentUploadSession
 );
 
-// Register an uploaded verification document.
+
+// Upload a verification document.
+// Multer must run before validation because the request is multipart/form-data.
 router.post(
   "/applications/:applicationId/documents",
-  validate(uploadVerificationDocumentSchema),
-  controller.registerUploadedDocument
+  receiveVerificationDocument,
+  validate({
+    params: applicationIdParamSchema,
+    body: registerDocumentSchema
+  }),
+  registerUploadedDocument
 );
 
-// Delete a document from an existing draft.
+
+// Delete a document from an editable draft.
 router.delete(
   "/applications/:applicationId/documents/:documentId",
-  validate(deleteVerificationDocumentSchema),
-  controller.deleteUploadedDocument
+  validate({
+    params: documentIdParamSchema
+  }),
+  deleteUploadedDocument
 );
+
 
 // Submit a completed draft for admin review.
 router.post(
   "/applications/:applicationId/submit",
-  validate(submitDraftVerificationApplicationSchema),
-  controller.submitDraftApplication
+  validate({
+    params: applicationIdParamSchema,
+    body: submitDraftVerificationApplicationSchema
+  }),
+  submitDraftApplication
 );
 
-// Retrieve the professional's verification status.
+
+// Get the authenticated professional's verification status.
 router.get(
   "/status",
-  validate(getMyVerificationStatusSchema),
-  controller.getMyStatus
+  getMyStatus
 );
 
-// Retrieve a specific verification application.
+
+// Get one verification application belonging to the authenticated professional.
 router.get(
   "/applications/:applicationId",
-  validate(getVerificationApplicationSchema),
-  controller.getMyApplication
+  validate({
+    params: applicationIdParamSchema
+  }),
+  getMyApplication
 );
+
 
 module.exports = router;
