@@ -1,4 +1,3 @@
-
 const { pool } = require("../config/database");
 
 const {
@@ -10,8 +9,52 @@ const {
   ProfessionalVerificationError
 } = require("./professionalVerificationService");
 
+const SERVICE_NAME = "professionalVerificationDocumentDeletionService";
+
 const createDeletionError = (message, statusCode = 400) => {
   return new ProfessionalVerificationError(message, statusCode);
+};
+
+const logDeletionEvent = (event, details = {}) => {
+  console.info(
+    JSON.stringify({
+      event,
+      service: SERVICE_NAME,
+      timestamp: new Date().toISOString(),
+      ...details
+    })
+  );
+};
+
+const logDeletionError = (event, error, details = {}) => {
+  console.error(
+    JSON.stringify({
+      event,
+      service: SERVICE_NAME,
+      timestamp: new Date().toISOString(),
+      error_name: error?.name || "Error",
+      error_code: error?.code || null,
+      status_code: error?.statusCode || null,
+      ...details
+    })
+  );
+};
+
+const rollbackSafely = async (client, details = {}) => {
+  try {
+    await client.query("ROLLBACK");
+
+    logDeletionEvent(
+      "professional_verification_document_deletion_rollback_succeeded",
+      details
+    );
+  } catch (rollbackError) {
+    logDeletionError(
+      "professional_verification_document_deletion_rollback_failed",
+      rollbackError,
+      details
+    );
+  }
 };
 
 const deleteProfessionalVerificationDocument = async (
@@ -22,14 +65,21 @@ const deleteProfessionalVerificationDocument = async (
   assertCloudinaryConfigured();
 
   const client = await pool.connect();
+
   let transactionStarted = false;
+
+  const logContext = {
+    user_id: userId,
+    application_id: applicationId,
+    document_id: documentId
+  };
 
   try {
     await client.query("BEGIN");
     transactionStarted = true;
 
     // Lock the professional profile first.
-    // This prevents deletion from racing with application submission.
+    // This serializes deletion against application submission.
     const profileResult = await client.query(
       `
         SELECT
@@ -83,7 +133,7 @@ const deleteProfessionalVerificationDocument = async (
       );
     }
 
-    // Confirm ownership and lock the application.
+    // Confirm application ownership and lock the application.
     const applicationResult = await client.query(
       `
         SELECT
@@ -114,7 +164,7 @@ const deleteProfessionalVerificationDocument = async (
       );
     }
 
-    // Retrieve only the document belonging to this application.
+    // Retrieve and lock only the document belonging to this application.
     const documentResult = await client.query(
       `
         SELECT
@@ -149,7 +199,9 @@ const deleteProfessionalVerificationDocument = async (
       );
     }
 
-    // Delete the private Cloudinary asset.
+    // Delete the authenticated Cloudinary asset.
+    // The database transaction remains open to prevent concurrent
+    // changes to this draft and document during deletion.
     const cloudinaryResult = await cloudinary.uploader.destroy(
       document.cloudinary_public_id,
       {
@@ -163,13 +215,23 @@ const deleteProfessionalVerificationDocument = async (
       !cloudinaryResult ||
       !["ok", "not found"].includes(cloudinaryResult.result)
     ) {
+      logDeletionEvent(
+        "professional_verification_document_cloudinary_deletion_unconfirmed",
+        {
+          ...logContext,
+          cloudinary_result:
+            cloudinaryResult?.result || "missing_result"
+        }
+      );
+
       throw createDeletionError(
         "The document could not be deleted from secure storage.",
         502
       );
     }
 
-    // Delete the database record after Cloudinary confirms the result.
+    // "not found" is accepted because an earlier attempt may have
+    // deleted the Cloudinary asset before its database transaction failed.
     const deleteResult = await client.query(
       `
         DELETE FROM professional_verification_documents
@@ -190,14 +252,29 @@ const deleteProfessionalVerificationDocument = async (
     await client.query("COMMIT");
     transactionStarted = false;
 
+    logDeletionEvent(
+      "professional_verification_document_deleted",
+      {
+        ...logContext,
+        cloudinary_deletion_result: cloudinaryResult.result
+      }
+    );
+
     return {
       message: "Verification document deleted successfully.",
       document_id: documentId
     };
   } catch (error) {
     if (transactionStarted) {
-      await client.query("ROLLBACK");
+      await rollbackSafely(client, logContext);
+      transactionStarted = false;
     }
+
+    logDeletionError(
+      "professional_verification_document_deletion_failed",
+      error,
+      logContext
+    );
 
     throw error;
   } finally {
