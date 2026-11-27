@@ -9,12 +9,12 @@ const {
 } = require("../middleware/professionalVerificationUpload");
 
 const {
-  submitApplicationSchema,
+  submitVerificationSchema,
   updateVerificationDraftSchema,
-  createUploadSessionSchema,
-  registerDocumentSchema,
-  applicationIdParamSchema,
-  documentIdParamSchema,
+  createVerificationUploadSessionSchema,
+  uploadVerificationDocumentSchema,
+  getVerificationApplicationSchema,
+  deleteVerificationDocumentSchema,
   submitDraftVerificationApplicationSchema
 } = require("../validators/professionalVerificationSchemas");
 
@@ -39,9 +39,7 @@ router.use(apiLimiter);
 // Create or resume a verification application draft.
 router.post(
   "/applications",
-  validate({
-    body: submitApplicationSchema
-  }),
+  validate(submitVerificationSchema),
   submitApplication
 );
 
@@ -49,44 +47,33 @@ router.post(
 // Update an existing verification application draft.
 router.patch(
   "/applications/:applicationId",
-  validate({
-    params: applicationIdParamSchema,
-    body: updateVerificationDraftSchema
-  }),
+  validate(updateVerificationDraftSchema),
   updateDraftApplication
 );
 
 
-// Create a short-lived document upload session.
+// Create a document upload session.
 router.post(
   "/applications/:applicationId/upload-session",
-  validate({
-    params: applicationIdParamSchema,
-    body: createUploadSessionSchema
-  }),
+  validate(createVerificationUploadSessionSchema),
   createDocumentUploadSession
 );
 
 
 // Upload a verification document.
-// Multer must run before validation because the request is multipart/form-data.
+// Multipart processing must happen before validation.
 router.post(
   "/applications/:applicationId/documents",
   receiveVerificationDocument,
-  validate({
-    params: applicationIdParamSchema,
-    body: registerDocumentSchema
-  }),
+  validate(uploadVerificationDocumentSchema),
   registerUploadedDocument
 );
 
 
-// Delete a document from an editable draft.
+// Delete a verification document from an editable application.
 router.delete(
   "/applications/:applicationId/documents/:documentId",
-  validate({
-    params: documentIdParamSchema
-  }),
+  validate(deleteVerificationDocumentSchema),
   deleteUploadedDocument
 );
 
@@ -94,10 +81,7 @@ router.delete(
 // Submit a completed draft for admin review.
 router.post(
   "/applications/:applicationId/submit",
-  validate({
-    params: applicationIdParamSchema,
-    body: submitDraftVerificationApplicationSchema
-  }),
+  validate(submitDraftVerificationApplicationSchema),
   submitDraftApplication
 );
 
@@ -105,16 +89,15 @@ router.post(
 // Get the authenticated professional's verification status.
 router.get(
   "/status",
+  validate(undefined),
   getMyStatus
 );
 
 
-// Get one verification application belonging to the authenticated professional.
+// Get one verification application.
 router.get(
   "/applications/:applicationId",
-  validate({
-    params: applicationIdParamSchema
-  }),
+  validate(getVerificationApplicationSchema),
   getMyApplication
 );
 
