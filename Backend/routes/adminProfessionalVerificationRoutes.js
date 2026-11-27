@@ -8,20 +8,32 @@ const { apiLimiter } = require("../middleware/security");
 const requireAdminPermission = require("../middleware/requireAdminPermission");
 
 const {
-  reviewProfessionalVerificationSchema
+  reviewProfessionalVerificationSchema,
+  getPendingProfessionalVerificationsSchema
 } = require("../validators/adminProfessionalVerificationSchemas");
 
 const {
   reviewApplication
 } = require("../controllers/adminProfessionalVerificationReviewController");
 
+const {
+  getPendingApplications
+} = require("../controllers/adminProfessionalVerificationQueueController");
+
 const router = express.Router();
 
 router.use(authenticate);
 router.use(apiLimiter);
 
-// Only administrators with the KYC review permission
-// can approve or reject professional verification applications.
+// Retrieve pending professional KYC applications.
+router.get(
+  "/applications/pending",
+  requireAdminPermission("admin.professional_verification.review"),
+  validate(getPendingProfessionalVerificationsSchema),
+  getPendingApplications
+);
+
+// Approve or reject a pending professional KYC application.
 router.post(
   "/applications/:applicationId/review",
   requireAdminPermission("admin.professional_verification.review"),
