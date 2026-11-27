@@ -1,4 +1,3 @@
-
 const crypto = require("crypto");
 
 const { pool } = require("../config/database");
@@ -20,11 +19,13 @@ const {
   normalizeFormat
 } = require("./professionalVerificationUploadService");
 
+const SERVICE_NAME = "professionalVerificationDocumentUploadService";
+
 const logVerificationEvent = (event, details = {}) => {
   console.info(JSON.stringify({
     event,
     timestamp: new Date().toISOString(),
-    service: "professionalVerificationDocumentUploadService",
+    service: SERVICE_NAME,
     ...details
   }));
 };
@@ -33,20 +34,42 @@ const logVerificationError = (event, error, details = {}) => {
   console.error(JSON.stringify({
     event,
     timestamp: new Date().toISOString(),
-    service: "professionalVerificationDocumentUploadService",
+    service: SERVICE_NAME,
     error_name: error?.name || "Error",
     error_code: error?.code || null,
+    status_code: error?.statusCode || null,
     ...details
   }));
 };
 
+const createVerificationError = (message, statusCode = 400) => {
+  return new ProfessionalVerificationError(message, statusCode);
+};
+
+/*
+ * Canonical format normalization.
+ *
+ * JPEG and JPG are the same image format.
+ * Both are represented internally as "jpg".
+ */
+const canonicalizeFormat = (format) => {
+  const normalized = normalizeFormat(format);
+
+  if (normalized === "jpeg") {
+    return "jpg";
+  }
+
+  return normalized;
+};
+
 const detectFileFormat = (buffer) => {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 12) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 5) {
     return null;
   }
 
   // JPEG
   if (
+    buffer.length >= 3 &&
     buffer[0] === 0xff &&
     buffer[1] === 0xd8 &&
     buffer[2] === 0xff
@@ -56,6 +79,7 @@ const detectFileFormat = (buffer) => {
 
   // PNG
   if (
+    buffer.length >= 8 &&
     buffer.subarray(0, 8).equals(
       Buffer.from([
         0x89, 0x50, 0x4e, 0x47,
@@ -68,6 +92,7 @@ const detectFileFormat = (buffer) => {
 
   // WebP
   if (
+    buffer.length >= 12 &&
     buffer.toString("ascii", 0, 4) === "RIFF" &&
     buffer.toString("ascii", 8, 12) === "WEBP"
   ) {
@@ -83,10 +108,6 @@ const detectFileFormat = (buffer) => {
 };
 
 const validateDeclaredMimeType = (format, mimeType) => {
-  if (!mimeType) {
-    return;
-  }
-
   const allowedMimeTypes = {
     jpg: ["image/jpeg"],
     jpeg: ["image/jpeg"],
@@ -95,10 +116,20 @@ const validateDeclaredMimeType = (format, mimeType) => {
     pdf: ["application/pdf"]
   };
 
+  if (
+    typeof mimeType !== "string" ||
+    !mimeType.trim()
+  ) {
+    throw createVerificationError(
+      "The uploaded document media type is missing.",
+      400
+    );
+  }
+
   const allowed = allowedMimeTypes[format];
 
-  if (!allowed || !allowed.includes(mimeType.toLowerCase())) {
-    throw new ProfessionalVerificationError(
+  if (!allowed || !allowed.includes(mimeType.toLowerCase().trim())) {
+    throw createVerificationError(
       "The uploaded document content does not match its declared media type.",
       400
     );
@@ -107,6 +138,8 @@ const validateDeclaredMimeType = (format, mimeType) => {
 
 const uploadToCloudinary = (buffer, session) => {
   return new Promise((resolve, reject) => {
+    let settled = false;
+
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         public_id: session.cloudinary_public_id,
@@ -122,6 +155,12 @@ const uploadToCloudinary = (buffer, session) => {
         ]
       },
       (error, result) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+
         if (error) {
           return reject(error);
         }
@@ -136,7 +175,23 @@ const uploadToCloudinary = (buffer, session) => {
       }
     );
 
-    uploadStream.end(buffer);
+    uploadStream.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(error);
+    });
+
+    try {
+      uploadStream.end(buffer);
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    }
   });
 };
 
@@ -164,7 +219,7 @@ const getValidUploadSession = async (
   );
 
   if (!profile) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Professional profile not found.",
       404
     );
@@ -174,7 +229,7 @@ const getValidUploadSession = async (
     profile.verification_status === "approved" ||
     profile.verification_status === "pending"
   ) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Document uploads are not available for this verification status.",
       403
     );
@@ -201,7 +256,7 @@ const getValidUploadSession = async (
   );
 
   if (applicationResult.rowCount === 0) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Verification application not found.",
       404
     );
@@ -210,7 +265,7 @@ const getValidUploadSession = async (
   const application = applicationResult.rows[0];
 
   if (application.status !== "draft") {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Documents can only be uploaded to a draft application.",
       403
     );
@@ -243,7 +298,7 @@ const getValidUploadSession = async (
   );
 
   if (sessionResult.rowCount === 0) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Invalid upload token.",
       401
     );
@@ -252,7 +307,7 @@ const getValidUploadSession = async (
   const session = sessionResult.rows[0];
 
   if (session.consumed_at) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "This upload session has already been used.",
       409
     );
@@ -264,7 +319,7 @@ const getValidUploadSession = async (
     !Number.isFinite(expiryTime) ||
     expiryTime <= Date.now()
   ) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Upload session has expired. Create a new upload session.",
       410
     );
@@ -274,22 +329,55 @@ const getValidUploadSession = async (
 };
 
 /*
- * If the database connection fails during COMMIT, the outcome can
- * be uncertain. Check whether the document row actually exists
- * before deleting its Cloudinary asset.
+ * The cleanup target is the predetermined session public ID.
+ *
+ * This also allows cleanup when Cloudinary processed the upload
+ * but the upload callback returned an error or incomplete result.
  */
-const isDocumentRegistered = async (publicId) => {
-  const result = await pool.query(
-    `
-      SELECT id
-      FROM professional_verification_documents
-      WHERE cloudinary_public_id = $1
-      LIMIT 1
-    `,
-    [publicId]
-  );
+const cleanupCloudinaryAsset = async (
+  publicId,
+  resourceType,
+  details = {}
+) => {
+  try {
+    const result = await deleteCloudinaryAsset(
+      publicId,
+      resourceType
+    );
 
-  return result.rowCount > 0;
+    if (
+      !result ||
+      !["ok", "not found"].includes(result.result)
+    ) {
+      logVerificationEvent(
+        "professional_verification_document_cleanup_unconfirmed",
+        {
+          ...details,
+          cleanup_result: result?.result || "missing_result"
+        }
+      );
+
+      return false;
+    }
+
+    logVerificationEvent(
+      "professional_verification_document_cleanup_completed",
+      {
+        ...details,
+        cleanup_result: result.result
+      }
+    );
+
+    return true;
+  } catch (error) {
+    logVerificationError(
+      "professional_verification_document_cleanup_failed",
+      error,
+      details
+    );
+
+    return false;
+  }
 };
 
 const uploadVerificationDocument = async (
@@ -299,7 +387,7 @@ const uploadVerificationDocument = async (
   file
 ) => {
   if (!userId || !applicationId) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "User and application identifiers are required.",
       400
     );
@@ -309,14 +397,14 @@ const uploadVerificationDocument = async (
     typeof uploadToken !== "string" ||
     !/^[a-f0-9]{64}$/i.test(uploadToken)
   ) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "A valid upload token is required.",
       400
     );
   }
 
   if (!file || !Buffer.isBuffer(file.buffer)) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "A document file is required.",
       400
     );
@@ -326,7 +414,7 @@ const uploadVerificationDocument = async (
     file.buffer.length === 0 ||
     file.buffer.length > MAX_DOCUMENT_SIZE_BYTES
   ) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "Document must be greater than 0 bytes and no larger than 10 MB.",
       413
     );
@@ -335,7 +423,7 @@ const uploadVerificationDocument = async (
   const actualFormat = detectFileFormat(file.buffer);
 
   if (!actualFormat) {
-    throw new ProfessionalVerificationError(
+    throw createVerificationError(
       "The document contents are not a supported file format.",
       400
     );
@@ -354,21 +442,29 @@ const uploadVerificationDocument = async (
 
   let transactionStarted = false;
   let commitAttempted = false;
+  let uploadAttempted = false;
   let uploadedAsset = null;
   let session = null;
+
+  const logContext = {
+    user_id: userId,
+    application_id: applicationId
+  };
 
   try {
     await client.query("BEGIN");
     transactionStarted = true;
 
     /*
-     * IMPORTANT:
-     * Keep the transaction and session row lock until the
-     * Cloudinary upload and database registration are complete.
+     * Lock order:
+     * 1. Professional profile.
+     * 2. Application.
+     * 3. Upload session.
      *
-     * A simultaneous request using the same token must wait.
-     * Once this transaction commits, that request will see
-     * consumed_at and will be rejected.
+     * The transaction remains open during the Cloudinary upload.
+     * This serializes simultaneous requests using the same session
+     * and prevents application submission/deletion from racing
+     * against this upload.
      */
     session = await getValidUploadSession(
       client,
@@ -377,32 +473,43 @@ const uploadVerificationDocument = async (
       tokenHash
     );
 
-    const expectedFormat = normalizeFormat(session.file_format);
+    const expectedFormat = canonicalizeFormat(
+      session.file_format
+    );
 
-    if (actualFormat !== expectedFormat) {
-      throw new ProfessionalVerificationError(
+    const canonicalActualFormat = canonicalizeFormat(
+      actualFormat
+    );
+
+    if (
+      !expectedFormat ||
+      canonicalActualFormat !== expectedFormat
+    ) {
+      throw createVerificationError(
         "The uploaded file does not match the format selected when the upload session was created.",
         400
       );
     }
 
-    const expectedResourceType = actualFormat === "pdf"
+    const expectedResourceType = expectedFormat === "pdf"
       ? "raw"
       : "image";
 
     if (session.resource_type !== expectedResourceType) {
-      throw new ProfessionalVerificationError(
+      throw createVerificationError(
         "The uploaded document resource type is invalid.",
         400
       );
     }
+
+    uploadAttempted = true;
 
     uploadedAsset = await uploadToCloudinary(
       file.buffer,
       session
     );
 
-    const cloudinaryFormat = normalizeFormat(
+    const cloudinaryFormat = canonicalizeFormat(
       uploadedAsset.format
     );
 
@@ -414,7 +521,7 @@ const uploadVerificationDocument = async (
       uploadedAsset.bytes !== file.buffer.length ||
       uploadedAsset.bytes > MAX_DOCUMENT_SIZE_BYTES
     ) {
-      throw new ProfessionalVerificationError(
+      throw createVerificationError(
         "Cloudinary returned an asset that does not match the upload session.",
         502
       );
@@ -433,7 +540,7 @@ const uploadVerificationDocument = async (
     );
 
     if (consumedResult.rowCount !== 1) {
-      throw new ProfessionalVerificationError(
+      throw createVerificationError(
         "Upload session has expired or has already been used.",
         409
       );
@@ -467,6 +574,13 @@ const uploadVerificationDocument = async (
       ]
     );
 
+    /*
+     * From this point onward, the outcome of COMMIT may be uncertain
+     * if the database connection fails.
+     *
+     * Never delete the Cloudinary asset after COMMIT has been
+     * attempted. A committed document might already reference it.
+     */
     commitAttempted = true;
 
     await client.query("COMMIT");
@@ -475,8 +589,7 @@ const uploadVerificationDocument = async (
     logVerificationEvent(
       "professional_verification_document_uploaded",
       {
-        user_id: userId,
-        application_id: applicationId,
+        ...logContext,
         document_id: documentResult.rows[0].id,
         upload_session_id: session.id,
         document_type: session.document_type,
@@ -498,94 +611,49 @@ const uploadVerificationDocument = async (
         logVerificationError(
           "professional_verification_document_rollback_failed",
           rollbackError,
-          {
-            user_id: userId,
-            application_id: applicationId
-          }
+          logContext
         );
       }
 
       transactionStarted = false;
     }
 
-    /*
-     * If COMMIT was attempted but its response was lost,
-     * determine whether PostgreSQL actually registered the
-     * document before considering Cloudinary cleanup.
-     */
-    let shouldCleanupAsset = Boolean(
-      uploadedAsset?.public_id
-    );
-
-    if (uploadedAsset?.public_id && commitAttempted) {
-      try {
-        const registered = await isDocumentRegistered(
-          uploadedAsset.public_id
-        );
-
-        if (registered) {
-          shouldCleanupAsset = false;
-
-          logVerificationEvent(
-            "professional_verification_document_commit_confirmed",
-            {
-              user_id: userId,
-              application_id: applicationId
-            }
-          );
+    if (commitAttempted) {
+      /*
+       * The commit result is uncertain.
+       *
+       * Keep the Cloudinary asset. Deleting it could break a document
+       * whose database transaction actually committed.
+       *
+       * If the database transaction did not commit, this may leave
+       * an orphaned Cloudinary asset. That is safer than deleting
+       * an asset potentially referenced by a committed document.
+       */
+      logVerificationError(
+        "professional_verification_document_commit_outcome_unknown",
+        error,
+        {
+          ...logContext,
+          upload_session_id: session?.id || null,
+          asset_cleanup_skipped: true
         }
-      } catch (verificationError) {
-        /*
-         * Do not delete an asset when its database registration
-         * cannot be determined. This avoids deleting a document
-         * that may have committed successfully.
-         */
-        shouldCleanupAsset = false;
-
-        logVerificationError(
-          "professional_verification_document_commit_status_unknown",
-          verificationError,
-          {
-            user_id: userId,
-            application_id: applicationId
-          }
-        );
-      }
-    }
-
-    if (shouldCleanupAsset) {
-      try {
-        const cleanupResult = await deleteCloudinaryAsset(
-          uploadedAsset.public_id,
-          uploadedAsset.resource_type
-        );
-
-        logVerificationEvent(
-          "professional_verification_document_cleanup_completed",
-          {
-            user_id: userId,
-            application_id: applicationId,
-            cleanup_result: cleanupResult?.result || "completed"
-          }
-        );
-      } catch (cleanupError) {
-        logVerificationError(
-          "professional_verification_document_cleanup_failed",
-          cleanupError,
-          {
-            user_id: userId,
-            application_id: applicationId
-          }
-        );
-      }
+      );
+    } else if (uploadAttempted && session?.cloudinary_public_id) {
+      await cleanupCloudinaryAsset(
+        session.cloudinary_public_id,
+        session.resource_type,
+        {
+          ...logContext,
+          upload_session_id: session.id
+        }
+      );
     }
 
     logVerificationError(
       "professional_verification_document_upload_failed",
       error,
       {
-        user_id: userId,
-        application_id: applicationId,
+        ...logContext,
         upload_session_id: session?.id || null,
         status_code: error.statusCode || 500
       }
