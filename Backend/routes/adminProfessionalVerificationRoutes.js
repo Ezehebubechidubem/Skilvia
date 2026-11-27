@@ -29,23 +29,26 @@ const router = express.Router();
 router.use(authenticate);
 router.use(apiLimiter);
 
+// Viewing pending applications requires professional-read permission.
 router.get(
   "/applications/pending",
-  requireAdminPermission("admin.professional_verification.review"),
+  requireAdminPermission("admin.professionals.read"),
   validate(getPendingProfessionalVerificationsSchema),
   getPendingApplications
 );
 
+// Viewing identity documents also requires professional-read permission.
 router.get(
   "/applications/:applicationId/documents/:documentId/access",
-  requireAdminPermission("admin.professional_verification.review"),
+  requireAdminPermission("admin.professionals.read"),
   validate(getProfessionalVerificationDocumentAccessSchema),
   getVerificationDocumentAccess
 );
 
+// Approving or rejecting applications requires approval permission.
 router.post(
   "/applications/:applicationId/review",
-  requireAdminPermission("admin.professional_verification.review"),
+  requireAdminPermission("admin.professionals.approve"),
   validate(reviewProfessionalVerificationSchema),
   reviewApplication
 );
