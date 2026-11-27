@@ -1,4 +1,3 @@
-
 const express = require("express");
 
 const { authenticate } = require("../middleware/authenticate");
@@ -9,7 +8,8 @@ const requireAdminPermission = require("../middleware/requireAdminPermission");
 
 const {
   reviewProfessionalVerificationSchema,
-  getPendingProfessionalVerificationsSchema
+  getPendingProfessionalVerificationsSchema,
+  getProfessionalVerificationDocumentAccessSchema
 } = require("../validators/adminProfessionalVerificationSchemas");
 
 const {
@@ -20,12 +20,15 @@ const {
   getPendingApplications
 } = require("../controllers/adminProfessionalVerificationQueueController");
 
+const {
+  getVerificationDocumentAccess
+} = require("../controllers/adminProfessionalVerificationDocumentController");
+
 const router = express.Router();
 
 router.use(authenticate);
 router.use(apiLimiter);
 
-// Retrieve pending professional KYC applications.
 router.get(
   "/applications/pending",
   requireAdminPermission("admin.professional_verification.review"),
@@ -33,7 +36,13 @@ router.get(
   getPendingApplications
 );
 
-// Approve or reject a pending professional KYC application.
+router.get(
+  "/applications/:applicationId/documents/:documentId/access",
+  requireAdminPermission("admin.professional_verification.review"),
+  validate(getProfessionalVerificationDocumentAccessSchema),
+  getVerificationDocumentAccess
+);
+
 router.post(
   "/applications/:applicationId/review",
   requireAdminPermission("admin.professional_verification.review"),
