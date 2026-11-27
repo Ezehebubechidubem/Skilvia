@@ -8,13 +8,13 @@ const {
 
 const getVerificationDocumentAccess = async (req, res, next) => {
   try {
-    const adminId = req.auth?.userId;
-    const { applicationId, documentId } = req.validated.params;
-
     const result = await getAdminVerificationDocumentUrl({
-      adminId,
-      applicationId,
-      documentId
+      adminId: req.auth?.userId,
+      applicationId: req.validated.params.applicationId,
+      documentId: req.validated.params.documentId,
+      ipAddress: req.ip || null,
+      userAgent: req.get("user-agent") || null,
+      requestId: req.id || null
     });
 
     return res.status(200).json({
