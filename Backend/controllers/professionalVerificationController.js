@@ -19,14 +19,14 @@ const {
 
 const {
   deleteProfessionalVerificationDocument
-} = require("../services/professionalVerificationDocumentService");
+} = require("../services/professionalVerificationDocumentDeletionService");
 
 const {
   submitDraftForReview
 } = require("../services/professionalVerificationSubmissionService");
 
 
-function handleControllerError(res, error, context) {
+const handleControllerError = (res, error, context) => {
   if (error instanceof ProfessionalVerificationError) {
     return res.status(error.statusCode || 400).json({
       success: false,
@@ -40,10 +40,11 @@ function handleControllerError(res, error, context) {
     success: false,
     message: "An unexpected error occurred. Please try again later."
   });
-}
+};
 
 
-async function submitApplication(req, res) {
+// Create or resume a verification application draft.
+const submitApplication = async (req, res) => {
   try {
     const result = await submitVerificationApplication(
       req.auth.userId,
@@ -62,10 +63,11 @@ async function submitApplication(req, res) {
       "Submit professional verification application"
     );
   }
-}
+};
 
 
-async function updateDraftApplication(req, res) {
+// Update an existing verification application draft.
+const updateDraftApplication = async (req, res) => {
   try {
     const result = await updateProfessionalVerificationDraft(
       req.auth.userId,
@@ -85,10 +87,11 @@ async function updateDraftApplication(req, res) {
       "Update professional verification draft"
     );
   }
-}
+};
 
 
-async function createDocumentUploadSession(req, res) {
+// Create a short-lived document upload session.
+const createDocumentUploadSession = async (req, res) => {
   try {
     const result = await createVerificationUploadSession(
       req.auth.userId,
@@ -108,14 +111,12 @@ async function createDocumentUploadSession(req, res) {
       "Create professional verification upload session"
     );
   }
-}
+};
 
 
-async function registerUploadedDocument(req, res) {
+// Upload a document directly through the backend to Cloudinary.
+const registerUploadedDocument = async (req, res) => {
   try {
-    const { applicationId } = req.validated.params;
-    const { upload_token: uploadToken } = req.validated.body;
-
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -125,8 +126,8 @@ async function registerUploadedDocument(req, res) {
 
     const result = await uploadVerificationDocument(
       req.auth.userId,
-      applicationId,
-      uploadToken,
+      req.validated.params.applicationId,
+      req.validated.body.upload_token,
       req.file
     );
 
@@ -142,10 +143,11 @@ async function registerUploadedDocument(req, res) {
       "Upload professional verification document"
     );
   }
-}
+};
 
 
-async function deleteUploadedDocument(req, res) {
+// Delete a document from an editable draft.
+const deleteUploadedDocument = async (req, res) => {
   try {
     const result = await deleteProfessionalVerificationDocument(
       req.auth.userId,
@@ -155,7 +157,7 @@ async function deleteUploadedDocument(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Verification document deleted successfully.",
+      message: result.message,
       data: result
     });
   } catch (error) {
@@ -165,10 +167,11 @@ async function deleteUploadedDocument(req, res) {
       "Delete professional verification document"
     );
   }
-}
+};
 
 
-async function submitDraftApplication(req, res) {
+// Submit a completed draft for admin review.
+const submitDraftApplication = async (req, res) => {
   try {
     const result = await submitDraftForReview(
       req.auth.userId,
@@ -177,7 +180,7 @@ async function submitDraftApplication(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Verification application submitted successfully.",
+      message: result.message,
       data: result
     });
   } catch (error) {
@@ -187,10 +190,11 @@ async function submitDraftApplication(req, res) {
       "Submit professional verification draft for review"
     );
   }
-}
+};
 
 
-async function getMyStatus(req, res) {
+// Get the authenticated professional's verification status.
+const getMyStatus = async (req, res) => {
   try {
     const result = await getMyVerificationStatus(
       req.auth.userId
@@ -207,10 +211,11 @@ async function getMyStatus(req, res) {
       "Get professional verification status"
     );
   }
-}
+};
 
 
-async function getMyApplication(req, res) {
+// Get one verification application belonging to the professional.
+const getMyApplication = async (req, res) => {
   try {
     const result = await getVerificationApplication(
       req.auth.userId,
@@ -228,7 +233,7 @@ async function getMyApplication(req, res) {
       "Get professional verification application"
     );
   }
-}
+};
 
 
 module.exports = {
