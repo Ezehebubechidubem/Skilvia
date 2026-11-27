@@ -21,6 +21,26 @@ const FIELD_LIMITS = Object.freeze({
   city: 100
 });
 
+const logVerificationEvent = (event, details = {}) => {
+  console.info(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationDraftService",
+    ...details
+  }));
+};
+
+const logVerificationError = (event, error, details = {}) => {
+  console.error(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    service: "professionalVerificationDraftService",
+    error_name: error?.name || "Error",
+    error_code: error?.code || null,
+    ...details
+  }));
+};
+
 const validateDraftData = (data) => {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new ProfessionalVerificationError(
@@ -76,7 +96,9 @@ const validateDraftData = (data) => {
         );
       }
 
-      const parsedDate = new Date(`${normalizedValue}T00:00:00.000Z`);
+      const parsedDate = new Date(
+        `${normalizedValue}T00:00:00.000Z`
+      );
 
       if (
         Number.isNaN(parsedDate.getTime()) ||
@@ -133,8 +155,11 @@ const updateProfessionalVerificationDraft = async (
   const updates = validateDraftData(data);
   const client = await pool.connect();
 
+  let transactionStarted = false;
+
   try {
     await client.query("BEGIN");
+    transactionStarted = true;
 
     const profile = await getProfessionalVerificationProfile(
       client,
@@ -172,7 +197,10 @@ const updateProfessionalVerificationDraft = async (
        WHERE id = $1
          AND professional_profile_id = $2
        FOR UPDATE`,
-      [applicationId, profile.id]
+      [
+        applicationId,
+        profile.professional_profile_id
+      ]
     );
 
     if (applicationResult.rows.length === 0) {
@@ -220,7 +248,10 @@ const updateProfessionalVerificationDraft = async (
          city,
          submitted_at,
          updated_at`,
-      [...values, profile.id]
+      [
+        ...values,
+        profile.professional_profile_id
+      ]
     );
 
     if (updateResult.rows.length === 0) {
@@ -231,13 +262,48 @@ const updateProfessionalVerificationDraft = async (
     }
 
     await client.query("COMMIT");
+    transactionStarted = false;
+
+    logVerificationEvent(
+      "professional_verification_draft_updated",
+      {
+        user_id: userId,
+        professional_profile_id: profile.professional_profile_id,
+        application_id: applicationId,
+        updated_field_count: Object.keys(updates).length
+      }
+    );
 
     return {
       message: "Verification draft updated successfully.",
       application: updateResult.rows[0]
     };
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        logVerificationError(
+          "professional_verification_draft_rollback_failed",
+          rollbackError,
+          {
+            user_id: userId,
+            application_id: applicationId
+          }
+        );
+      }
+    }
+
+    logVerificationError(
+      "professional_verification_draft_update_failed",
+      error,
+      {
+        user_id: userId,
+        application_id: applicationId,
+        status_code: error.statusCode || 500
+      }
+    );
+
     throw error;
   } finally {
     client.release();
