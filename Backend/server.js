@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const env = require("./config/environment");
@@ -28,6 +29,20 @@ const socketAuthenticate = require("./middleware/socketAuthenticate");
 
 
 // =====================================================
+// SAFE DIAGNOSTIC LOGGING
+// =====================================================
+
+const logServerError = (event, error) => {
+  console.error(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    error_name: error?.name || "Error",
+    error_code: error?.code || null
+  }));
+};
+
+
+// =====================================================
 // ROUTE IMPORTS
 // =====================================================
 
@@ -39,6 +54,9 @@ const professionalRoutes = require("./routes/professionalRoutes");
 
 const professionalVerificationRoutes =
   require("./routes/professionalVerificationRoutes");
+
+const adminProfessionalVerificationRoutes =
+  require("./routes/adminProfessionalVerificationRoutes");
 
 const serviceRoutes = require("./routes/serviceRoutes");
 const publicServiceRoutes = require("./routes/publicServiceRoutes");
@@ -125,12 +143,15 @@ app.use(
   })
 );
 
+// Log request paths without query-string values.
+// This prevents tokens or other sensitive query parameters
+// from accidentally appearing in Render logs.
+morgan.token("safe-path", (req) => req.path);
+
 if (env.NODE_ENV !== "test") {
   app.use(
     morgan(
-      env.NODE_ENV === "production"
-        ? "combined"
-        : "dev"
+      ":method :safe-path :status :res[content-length] - :response-time ms"
     )
   );
 }
@@ -152,11 +173,10 @@ app.get("/api/health", async (req, res) => {
       database: "connected",
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    console.error(
-      "Health check database error:",
-      error.message
+    logServerError(
+      "health_check_database_failed",
+      error
     );
 
     return res.status(503).json({
@@ -203,6 +223,16 @@ app.use("/api/professionals", professionalRoutes);
 app.use(
   "/api/professional-verification",
   professionalVerificationRoutes
+);
+
+
+// =====================================================
+// ADMIN PROFESSIONAL VERIFICATION ROUTES
+// =====================================================
+
+app.use(
+  "/api/admin/professional-verification",
+  adminProfessionalVerificationRoutes
 );
 
 
@@ -295,15 +325,19 @@ app.use(
 // =====================================================
 
 io.on("connection", (socket) => {
-  console.log(
-    `Authenticated socket connected: ${socket.auth.userId}`
-  );
+  console.info(JSON.stringify({
+    event: "socket_connected",
+    timestamp: new Date().toISOString(),
+    user_id: socket.auth.userId
+  }));
 
   socket.on("disconnect", (reason) => {
-    console.log(
-      `Socket disconnected: ${socket.auth.userId}`,
+    console.info(JSON.stringify({
+      event: "socket_disconnected",
+      timestamp: new Date().toISOString(),
+      user_id: socket.auth.userId,
       reason
-    );
+    }));
   });
 });
 
@@ -344,25 +378,24 @@ const startServer = async () => {
       server.listen(env.PORT);
     });
 
-    console.log("--------------------------------");
-    console.log("SKILVIA BACKEND STARTED");
-    console.log("--------------------------------");
-    console.log(`Port: ${env.PORT}`);
-    console.log(`Environment: ${env.NODE_ENV}`);
-    console.log("--------------------------------");
-
+    console.info(JSON.stringify({
+      event: "server_started",
+      timestamp: new Date().toISOString(),
+      port: env.PORT,
+      environment: env.NODE_ENV
+    }));
   } catch (error) {
-    console.error(
-      "SKILVIA startup failed:",
-      error.message
+    logServerError(
+      "server_startup_failed",
+      error
     );
 
     try {
       await closeDatabase();
     } catch (shutdownError) {
-      console.error(
-        "Database cleanup failed:",
-        shutdownError.message
+      logServerError(
+        "startup_database_cleanup_failed",
+        shutdownError
       );
     }
 
@@ -380,14 +413,17 @@ const shutdown = async (signal = "MANUAL") => {
 
   isShuttingDown = true;
 
-  console.log(
-    `\nSKILVIA shutdown started: ${signal}`
-  );
+  console.info(JSON.stringify({
+    event: "server_shutdown_started",
+    timestamp: new Date().toISOString(),
+    signal
+  }));
 
   const forceShutdownTimer = setTimeout(() => {
-    console.error(
-      "Graceful shutdown timed out. Forcing process exit."
-    );
+    console.error(JSON.stringify({
+      event: "server_shutdown_timeout",
+      timestamp: new Date().toISOString()
+    }));
 
     process.exit(1);
   }, 15000);
@@ -403,12 +439,14 @@ const shutdown = async (signal = "MANUAL") => {
 
     clearTimeout(forceShutdownTimer);
 
-    console.log("SKILVIA shutdown completed.");
-
+    console.info(JSON.stringify({
+      event: "server_shutdown_completed",
+      timestamp: new Date().toISOString()
+    }));
   } catch (error) {
-    console.error(
-      "SKILVIA shutdown error:",
-      error.message
+    logServerError(
+      "server_shutdown_failed",
+      error
     );
 
     clearTimeout(forceShutdownTimer);
