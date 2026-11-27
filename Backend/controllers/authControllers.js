@@ -16,7 +16,7 @@ const {
 
 const getDeviceInfo = require("../utils/deviceInfo");
 
-// Dummy hash helps reduce timing differences when
+// Dummy hash helps reduce timing differences 
 // an email address does not exist during login.
 const dummyPasswordHashPromise = hashPassword(
   "SKILVIA_DUMMY_PASSWORD_NOT_FOR_LOGIN_2026"
