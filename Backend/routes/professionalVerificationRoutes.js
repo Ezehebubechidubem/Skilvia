@@ -1,7 +1,7 @@
 const express = require("express");
 
 const { authenticate } = require("../middleware/authenticate");
-const { validate } = require("../middleware/validate");
+const validate = require("../middleware/validate");
 const { apiLimiter } = require("../middleware/security");
 
 const {
@@ -15,6 +15,7 @@ const {
   uploadVerificationDocumentSchema,
   getVerificationApplicationSchema,
   deleteVerificationDocumentSchema,
+  getMyVerificationStatusSchema,
   submitDraftVerificationApplicationSchema
 } = require("../validators/professionalVerificationSchemas");
 
@@ -61,7 +62,7 @@ router.post(
 
 
 // Upload a verification document.
-// Multipart processing must happen before validation.
+// Multer processes multipart/form-data before request validation.
 router.post(
   "/applications/:applicationId/documents",
   receiveVerificationDocument,
@@ -70,7 +71,7 @@ router.post(
 );
 
 
-// Delete a verification document from an editable application.
+// Delete a document from an editable application.
 router.delete(
   "/applications/:applicationId/documents/:documentId",
   validate(deleteVerificationDocumentSchema),
@@ -89,7 +90,7 @@ router.post(
 // Get the authenticated professional's verification status.
 router.get(
   "/status",
-  validate(undefined),
+  validate(getMyVerificationStatusSchema),
   getMyStatus
 );
 
