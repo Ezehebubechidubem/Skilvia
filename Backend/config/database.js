@@ -1,14 +1,43 @@
-
 const { Pool } = require("pg");
+const { runMigrations } = require("../database/migrate");
 
-// Ensure the database connection string exists
+// =====================================================
+// DATABASE ENVIRONMENT VALIDATION
+// =====================================================
+
 if (!process.env.DATABASE_URL) {
   throw new Error(
     "DATABASE_URL is missing from the environment variables."
   );
 }
 
-// PostgreSQL connection configuration
+
+// =====================================================
+// SAFE DATABASE LOGGING
+// =====================================================
+
+const logDatabaseEvent = (event, details = {}) => {
+  console.info(JSON.stringify({
+    event,
+    timestamp: new Date().toISOString(),
+    ...details
+  }));
+};
+
+const getSafeErrorDetails = (error) => ({
+  error_code: error?.code || null,
+  error_message: String(
+    error?.message || "Unknown database error."
+  )
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[REDACTED_DATABASE_URL]")
+    .slice(0, 500)
+});
+
+
+// =====================================================
+// POSTGRESQL CONNECTION POOL
+// =====================================================
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 
@@ -38,38 +67,52 @@ const pool = new Pool({
   allowExitOnIdle: false
 });
 
-// Monitor unexpected PostgreSQL connection errors
+
+// =====================================================
+// POOL ERROR HANDLING
+// =====================================================
+
 pool.on("error", (error) => {
-  console.error(
-    "Unexpected PostgreSQL connection error:",
-    error.message
+  logDatabaseEvent(
+    "unexpected_database_pool_error",
+    getSafeErrorDetails(error)
   );
 });
 
-// Connect and verify database availability
+
+// =====================================================
+// CONNECT AND INITIALIZE DATABASE
+// =====================================================
+
 const connectDatabase = async () => {
   let client;
 
   try {
     client = await pool.connect();
 
+    // Verify that PostgreSQL is reachable.
     const result = await client.query(
       "SELECT NOW() AS current_time"
     );
 
-    console.log("--------------------------------");
-    console.log("SKILVIA DATABASE CONNECTED");
-    console.log("--------------------------------");
-    console.log(
-      "Database time:",
-      result.rows[0].current_time
-    );
+    logDatabaseEvent("database_connection_verified", {
+      database_time: result.rows[0].current_time
+    });
+
+    // Apply pending SQL migrations before the API starts.
+    // The migration runner uses this same database connection.
+    await runMigrations(client);
+
+    logDatabaseEvent("database_startup_completed", {
+      schema: "public",
+      migrations: "completed"
+    });
 
     return true;
   } catch (error) {
-    console.error(
-      "PostgreSQL connection failed:",
-      error.message
+    logDatabaseEvent(
+      "database_startup_failed",
+      getSafeErrorDetails(error)
     );
 
     throw error;
@@ -80,22 +123,31 @@ const connectDatabase = async () => {
   }
 };
 
-// Close the database connection pool safely
+
+// =====================================================
+// CLOSE DATABASE CONNECTION POOL
+// =====================================================
+
 const closeDatabase = async () => {
   try {
     await pool.end();
-    console.log("PostgreSQL connection pool closed.");
+
+    logDatabaseEvent("database_connection_pool_closed");
   } catch (error) {
-    console.error(
-      "Database shutdown error:",
-      error.message
+    logDatabaseEvent(
+      "database_shutdown_failed",
+      getSafeErrorDetails(error)
     );
 
     throw error;
   }
 };
 
-// Export database functions
+
+// =====================================================
+// EXPORT DATABASE FUNCTIONS
+// =====================================================
+
 module.exports = {
   pool,
   connectDatabase,
