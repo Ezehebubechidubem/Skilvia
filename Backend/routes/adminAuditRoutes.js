@@ -1,4 +1,3 @@
-
 const express = require("express");
 
 const router = express.Router();
@@ -14,21 +13,15 @@ const {
 
 const {
   getAdminAuditLogs,
-  getAdminAuditLogById
+  getAdminAuditLog
 } = require("../controllers/adminAuditController");
-
 
 // =====================================================
 // AUTHENTICATION AND AUTHORIZATION
 // =====================================================
 
 router.use(authenticate);
-
-// Complete audit-log access is restricted to the
-// active main administrator.
-
 router.use(requireSuperAdmin);
-
 
 // =====================================================
 // VIEW AUDIT LOGS
@@ -40,7 +33,6 @@ router.get(
   getAdminAuditLogs
 );
 
-
 // =====================================================
 // VIEW ONE AUDIT LOG
 // =====================================================
@@ -48,8 +40,7 @@ router.get(
 router.get(
   "/:auditLogId",
   validate(getAdminAuditLogByIdSchema),
-  getAdminAuditLogById
+  getAdminAuditLog
 );
-
 
 module.exports = router;
