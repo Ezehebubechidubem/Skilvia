@@ -14,10 +14,6 @@ const {
 } = require("../utils/oneTimeTokens");
 
 const {
-  revokeAllUserRefreshTokens
-} = require("../utils/tokens");
-
-const {
   sendVerificationEmail,
   sendPasswordResetEmail
 } = require("../services/emailService");
@@ -94,11 +90,15 @@ const resendVerification = async (req, res, next) => {
       });
     }
 
-    const token = await createEmailVerificationToken(
-      user.id
-    );
+    const verificationTokenResult =
+      await createEmailVerificationToken(user.id);
 
-    await sendVerificationEmail(user, token);
+    // The token generator returns an object.
+    // The email service requires the token string.
+    await sendVerificationEmail(
+      user,
+      verificationTokenResult.token
+    );
 
     return res.status(200).json({
       success: true,
@@ -136,11 +136,14 @@ const requestPasswordReset = async (req, res, next) => {
 
     // Do not reveal whether an account exists.
     if (user && user.account_status === "active") {
-      const token = await createPasswordResetToken(
-        user.id
-      );
+      const passwordResetTokenResult =
+        await createPasswordResetToken(user.id);
 
-      await sendPasswordResetEmail(user, token);
+      // Pass only the actual token string to the email service.
+      await sendPasswordResetEmail(
+        user,
+        passwordResetTokenResult.token
+      );
     }
 
     return res.status(200).json({
