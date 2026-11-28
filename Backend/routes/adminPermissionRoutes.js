@@ -1,4 +1,3 @@
-
 const express = require("express");
 
 const router = express.Router();
@@ -19,7 +18,7 @@ const {
 const {
   getAdministrators,
   getPermissionCatalogue,
-  getAdminPermissions,
+  getAdministratorAssignments,
   grantPermission,
   updatePermissionExpiry,
   revokePermission
@@ -63,7 +62,7 @@ router.get(
 router.get(
   "/:adminId/permissions",
   validate(getAdminAssignmentsSchema),
-  getAdminPermissions
+  getAdministratorAssignments
 );
 
 
